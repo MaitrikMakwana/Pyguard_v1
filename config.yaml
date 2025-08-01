@@ -1,0 +1,36 @@
+version: 0.1.0
+interface: null  # Will be auto-detected if not specified
+output_dir: ./output
+pcap:
+  enabled: true
+  rotate_size_mb: 100
+  rotate_interval_minutes: 60
+  max_files: 10
+database:
+  enabled: true
+  type: postgresql
+  host: localhost
+  port: 5432
+  name: pyguard_db
+  user: postgres
+  password: 6969Ma@18082004
+  batch_size: 1000
+  commit_interval: 5  # seconds
+csv_export:
+  enabled: false
+  directory: ./csv_export
+  rotate_interval_minutes: 60
+  max_files: 10
+capture:
+  bpf_filter: ""  # Empty string means capture everything
+  snaplen: 65535  # Maximum packet size to capture
+  promiscuous: true
+  buffer_size_mb: 100
+  batch_size: 1000
+  processing_threads: 4
+system:
+  memory_limit_percent: 80
+  cpu_limit_percent: 90
+  check_interval_seconds: 10
+log_level: INFO
+log_file: pyguard.log

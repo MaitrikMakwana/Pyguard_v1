@@ -1,0 +1,3 @@
+"""
+PyGuard test package
+"""
