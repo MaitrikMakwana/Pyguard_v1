@@ -1,0 +1,87 @@
+2025-08-01 21:06:33,678 - __main__ - INFO - Added 10 interface options
+2025-08-01 21:06:34,172 - __main__ - INFO - UI state loaded
+2025-08-01 21:06:34,174 - __main__ - INFO - PyGuard Desktop Application started - Wireshark-like UI with heavy traffic support
+2025-08-01 21:06:40,357 - __main__ - INFO - Starting packet capture on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4}
+2025-08-01 21:06:40,357 - __main__ - INFO - Capture started on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} with filter: 
+2025-08-01 21:06:40,357 - __main__ - INFO - Starting capture on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} with filter: 
+2025-08-01 21:06:49,277 - __main__ - INFO - Capture stopped
+2025-08-01 21:06:49,992 - __main__ - INFO - Packet capture stopped
+2025-08-01 21:07:02,948 - __main__ - INFO - Packet display limit set to 1,000 packets
+2025-08-01 21:07:21,987 - __main__ - INFO - Display cleared
+2025-08-01 21:07:27,371 - __main__ - INFO - UI state saved
+2025-08-01 21:47:43,599 - __main__ - INFO - Added 10 interface options
+2025-08-01 21:47:44,741 - __main__ - INFO - UI state loaded
+2025-08-01 21:47:44,745 - __main__ - INFO - PyGuard Desktop Application started - Wireshark-like UI with heavy traffic support
+2025-08-01 21:48:09,994 - __main__ - INFO - Packet display limit set to 1,000 packets
+2025-08-01 21:48:12,547 - __main__ - INFO - Capture started on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} with filter: tcp
+2025-08-01 21:48:12,557 - __main__ - INFO - Starting packet capture on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4}
+2025-08-01 21:48:12,557 - __main__ - INFO - Starting capture on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} with filter: tcp
+2025-08-01 21:48:19,466 - __main__ - INFO - Capture stopped
+2025-08-01 21:48:19,662 - __main__ - INFO - Packet capture stopped
+2025-08-01 21:50:22,335 - __main__ - INFO - Saved 1158 packets to PCAP file: C:/Users/Admin/Downloads/t1.pcap
+2025-08-01 21:52:57,777 - __main__ - INFO - UI state saved
+2025-08-02 13:39:12,997 - __main__ - INFO - Added 10 interface options
+2025-08-02 13:39:14,352 - __main__ - INFO - UI state loaded
+2025-08-02 13:39:14,357 - __main__ - INFO - PyGuard Desktop Application started - Wireshark-like UI with heavy traffic support
+2025-08-02 13:41:20,131 - __main__ - INFO - Capture started on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} with filter: 
+2025-08-02 13:41:20,131 - __main__ - INFO - Starting packet capture on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4}
+2025-08-02 13:41:20,135 - __main__ - INFO - Starting capture on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} with filter: 
+2025-08-02 13:41:25,915 - __main__ - INFO - Capture stopped
+2025-08-02 13:41:25,966 - __main__ - INFO - Packet capture stopped
+2025-08-02 13:42:02,448 - __main__ - INFO - UI state saved
+2025-08-02 14:04:57,574 - __main__ - INFO - Added 10 interface options
+2025-08-02 14:04:58,628 - __main__ - INFO - UI state loaded
+2025-08-02 14:04:58,633 - __main__ - INFO - PyGuard Desktop Application started - Wireshark-like UI with heavy traffic support
+2025-08-02 14:05:10,120 - __main__ - INFO - Capture started on interface \Device\NPF_{98D3EA69-7F40-4253-8D9B-961B57E68B99} with filter: 
+2025-08-02 14:05:10,120 - __main__ - INFO - Starting packet capture on interface \Device\NPF_{98D3EA69-7F40-4253-8D9B-961B57E68B99}
+2025-08-02 14:05:10,150 - __main__ - INFO - Starting capture on interface \Device\NPF_{98D3EA69-7F40-4253-8D9B-961B57E68B99} with filter: 
+2025-08-02 14:05:20,169 - __main__ - INFO - Capture stopped
+2025-08-02 14:05:22,391 - __main__ - INFO - Starting packet capture on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4}
+2025-08-02 14:05:22,391 - __main__ - INFO - Starting capture on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} with filter: 
+2025-08-02 14:05:22,391 - __main__ - INFO - Capture started on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} with filter: 
+2025-08-02 14:05:32,569 - __main__ - INFO - Capture stopped
+2025-08-02 14:05:33,059 - __main__ - INFO - Packet capture stopped
+2025-08-02 14:07:31,309 - __main__ - INFO - Display cleared
+2025-08-02 14:07:32,564 - __main__ - INFO - UI state saved
+2025-08-02 14:29:32,921 - __main__ - INFO - Added 10 interface options
+2025-08-02 14:29:33,648 - __main__ - INFO - UI state loaded
+2025-08-02 14:29:33,649 - __main__ - INFO - PyGuard Desktop Application started - Wireshark-like UI with heavy traffic support
+2025-08-02 14:29:38,462 - __main__ - INFO - Capture started on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} with filter: 
+2025-08-02 14:29:38,462 - __main__ - INFO - Starting packet capture on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4}
+2025-08-02 14:29:38,470 - __main__ - INFO - Starting capture on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} with filter: 
+2025-08-02 14:29:51,962 - __main__ - INFO - Capture stopped
+2025-08-02 14:29:52,073 - __main__ - INFO - Packet capture stopped
+2025-08-02 14:29:57,354 - __main__ - INFO - Starting packet capture on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4}
+2025-08-02 14:29:57,365 - __main__ - INFO - Capture started on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} with filter: 
+2025-08-02 14:29:57,365 - __main__ - INFO - Starting capture on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} with filter: 
+2025-08-02 14:29:59,245 - __main__ - INFO - Capture started on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} with filter: 
+2025-08-02 14:29:59,245 - __main__ - INFO - Starting packet capture on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4}
+2025-08-02 14:29:59,253 - __main__ - INFO - Starting capture on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} with filter: 
+2025-08-02 14:30:01,489 - __main__ - INFO - Capture stopped
+2025-08-02 14:30:01,500 - __main__ - INFO - Packet capture stopped
+2025-08-02 14:30:05,342 - __main__ - INFO - Display cleared
+2025-08-02 14:30:05,343 - __main__ - INFO - Capture started on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} with filter: 
+2025-08-02 14:30:05,349 - __main__ - INFO - Capture restarted
+2025-08-02 14:30:05,346 - __main__ - INFO - Starting packet capture on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4}
+2025-08-02 14:30:05,351 - __main__ - INFO - Starting capture on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} with filter: 
+2025-08-02 14:30:15,076 - __main__ - INFO - Packet capture stopped
+2025-08-02 14:30:15,357 - __main__ - INFO - Capture stopped
+2025-08-02 14:30:19,631 - __main__ - INFO - Display cleared
+2025-08-02 14:30:24,956 - __main__ - INFO - Display cleared
+2025-08-02 14:30:29,593 - __main__ - INFO - UI state saved
+2025-08-02 14:30:38,160 - __main__ - INFO - Added 10 interface options
+2025-08-02 14:30:38,903 - __main__ - INFO - UI state loaded
+2025-08-02 14:30:38,903 - __main__ - INFO - PyGuard Desktop Application started - Wireshark-like UI with heavy traffic support
+2025-08-02 14:30:43,999 - __main__ - INFO - Capture started on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} with filter: 
+2025-08-02 14:30:44,001 - __main__ - INFO - Starting packet capture on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4}
+2025-08-02 14:30:44,005 - __main__ - INFO - Starting capture on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} with filter: 
+2025-08-02 14:30:57,161 - __main__ - INFO - Capture stopped
+2025-08-02 14:30:57,161 - __main__ - INFO - Packet capture stopped
+2025-08-02 14:31:07,617 - __main__ - INFO - Starting packet capture on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4}
+2025-08-02 14:31:07,622 - __main__ - INFO - Starting capture on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} with filter: 
+2025-08-02 14:31:07,631 - __main__ - INFO - Capture started on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} with filter: 
+2025-08-02 14:31:10,883 - __main__ - INFO - Capture stopped
+2025-08-02 14:31:10,973 - __main__ - INFO - Packet capture stopped
+2025-08-02 14:31:25,097 - __main__ - INFO - Saved 565 packets to JSON file: C:/Users/Admin/Downloads/trial_jason.json
+2025-08-02 14:31:37,962 - __main__ - INFO - Saved 565 packets to PCAP file: C:/Users/Admin/Downloads/trial_pacp.pcap
+2025-08-02 14:31:50,243 - __main__ - ERROR - Error saving packets: 'charmap' codec can't encode character '\u2192' in position 118: character maps to <undefined>
