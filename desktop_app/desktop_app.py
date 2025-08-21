@@ -4310,39 +4310,76 @@ class DesktopApp(QMainWindow):
             progress.close()
     
     def load_pcap_file(self, file_path, progress):
-        """Load packets from a PCAP file"""
-        from scapy.all import rdpcap
-        
-        progress.setLabelText("Reading PCAP file...")
-        QApplication.processEvents()
-        
-        # Read PCAP file
-        packets = rdpcap(file_path)
-        total_packets = len(packets)
-        
-        progress.setMaximum(total_packets)
-        progress.setLabelText(f"Processing {total_packets} packets...")
-        
-        # Clear existing packets
-        self.captured_packets.clear()
-        
-        # Process each packet
-        for i, packet in enumerate(packets):
-            if progress.wasCanceled():
-                logger.info("PCAP load canceled by user")
+        """Load packets from a PCAP file with enhanced error handling"""
+        try:
+            from scapy.all import rdpcap
+            
+            progress.setLabelText("Reading PCAP file...")
+            QApplication.processEvents()
+            
+            # Read PCAP file with error handling
+            try:
+                packets = rdpcap(file_path)
+                total_packets = len(packets)
+                logger.info(f"Successfully read {total_packets} packets from {file_path}")
+            except Exception as e:
+                logger.error(f"Failed to read PCAP file {file_path}: {e}")
+                raise Exception(f"Failed to read PCAP file: {e}")
+            
+            if total_packets == 0:
+                logger.warning("PCAP file contains no packets")
+                QMessageBox.warning(self, "Empty File", "The PCAP file contains no packets.")
                 return
             
-            # Process the packet using existing packet processing logic
-            packet_info = self._process_scapy_packet(packet, i + 1)
-            if packet_info:
-                self.captured_packets.append(packet_info)
+            progress.setMaximum(total_packets)
+            progress.setLabelText(f"Processing {total_packets} packets...")
             
-            # Update progress every 100 packets
-            if i % 100 == 0:
-                progress.setValue(i)
-                QApplication.processEvents()
-        
-        progress.setValue(total_packets)
+            # Clear existing packets
+            self.captured_packets.clear()
+            
+            # Process each packet with error handling
+            successful_packets = 0
+            failed_packets = 0
+            
+            for i, packet in enumerate(packets):
+                if progress.wasCanceled():
+                    logger.info("PCAP load canceled by user")
+                    return
+                
+                try:
+                    # Process the packet using existing packet processing logic
+                    packet_info = self._process_scapy_packet(packet, i + 1)
+                    if packet_info:
+                        self.captured_packets.append(packet_info)
+                        successful_packets += 1
+                    else:
+                        failed_packets += 1
+                        logger.warning(f"Failed to process packet {i + 1}")
+                except Exception as e:
+                    failed_packets += 1
+                    logger.error(f"Error processing packet {i + 1}: {e}")
+                    # Continue processing other packets instead of crashing
+                    continue
+                
+                # Update progress every 100 packets
+                if i % 100 == 0:
+                    progress.setValue(i)
+                    progress.setLabelText(f"Processing {i}/{total_packets} packets... (Success: {successful_packets}, Failed: {failed_packets})")
+                    QApplication.processEvents()
+            
+            progress.setValue(total_packets)
+            
+            # Log results
+            logger.info(f"PCAP processing complete: {successful_packets} successful, {failed_packets} failed")
+            
+            # Show warning if some packets failed
+            if failed_packets > 0:
+                QMessageBox.warning(self, "Processing Warning", 
+                                   f"Processed {successful_packets} packets successfully.\n{failed_packets} packets failed to process.")
+            
+        except Exception as e:
+            logger.error(f"Critical error in load_pcap_file: {e}")
+            raise Exception(f"Failed to load PCAP file: {e}")
     
     def load_csv_file(self, file_path, progress):
         """Load packets from a CSV file"""
@@ -4429,91 +4466,128 @@ class DesktopApp(QMainWindow):
         progress.setValue(total_packets)
     
     def _process_scapy_packet(self, packet, frame_number):
-        """Process a scapy packet object into our packet format"""
+        """Process a scapy packet object into our packet format with enhanced error handling"""
         try:
-            # Use the existing packet processing logic from the capture thread
+            # Basic packet metadata
             metadata = {
                 "frame_number": frame_number,
                 "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f"),
                 "size": len(packet),
                 "layers": [],
-                "packet_data": bytes(packet)  # Store raw packet data
+                "packet_data": bytes(packet) if hasattr(packet, '__bytes__') else str(packet)
             }
             
-            # Extract Ethernet layer metadata
-            if Ether in packet:
-                metadata.update({
-                    "mac_src": packet[Ether].src,
-                    "mac_dst": packet[Ether].dst,
-                    "eth_type": packet[Ether].type
-                })
-                metadata["layers"].append("Ethernet")
+            # Extract Ethernet layer metadata safely
+            try:
+                if Ether in packet and packet.haslayer(Ether):
+                    eth_layer = packet[Ether]
+                    metadata.update({
+                        "mac_src": str(eth_layer.src) if hasattr(eth_layer, 'src') else "Unknown",
+                        "mac_dst": str(eth_layer.dst) if hasattr(eth_layer, 'dst') else "Unknown",
+                        "eth_type": int(eth_layer.type) if hasattr(eth_layer, 'type') else 0
+                    })
+                    metadata["layers"].append("Ethernet")
+            except Exception as e:
+                logger.warning(f"Error extracting Ethernet layer from packet {frame_number}: {e}")
             
-            # Extract IP layer metadata
-            if IP in packet:
-                metadata.update({
-                    "src_ip": packet[IP].src,
-                    "dst_ip": packet[IP].dst,
-                    "ttl": packet[IP].ttl,
-                    "ip_id": packet[IP].id,
-                    "ip_len": packet[IP].len,
-                    "ip_version": 4
-                })
-                metadata["layers"].append("IPv4")
+            # Extract IP layer metadata safely
+            try:
+                if IP in packet and packet.haslayer(IP):
+                    ip_layer = packet[IP]
+                    metadata.update({
+                        "src_ip": str(ip_layer.src) if hasattr(ip_layer, 'src') else "Unknown",
+                        "dst_ip": str(ip_layer.dst) if hasattr(ip_layer, 'dst') else "Unknown",
+                        "ttl": int(ip_layer.ttl) if hasattr(ip_layer, 'ttl') else 0,
+                        "ip_id": int(ip_layer.id) if hasattr(ip_layer, 'id') else 0,
+                        "ip_len": int(ip_layer.len) if hasattr(ip_layer, 'len') else 0,
+                        "ip_version": 4
+                    })
+                    metadata["layers"].append("IPv4")
+            except Exception as e:
+                logger.warning(f"Error extracting IP layer from packet {frame_number}: {e}")
             
-            # Extract transport layer metadata
-            if TCP in packet:
-                metadata.update({
-                    "protocol": "TCP",
-                    "src_port": packet[TCP].sport,
-                    "dst_port": packet[TCP].dport,
-                    "seq": packet[TCP].seq,
-                    "ack": packet[TCP].ack,
-                    "window": packet[TCP].window
-                })
-                
-                # Extract TCP flags
-                flags = []
-                if packet[TCP].flags & 0x01: flags.append("FIN")
-                if packet[TCP].flags & 0x02: flags.append("SYN")
-                if packet[TCP].flags & 0x04: flags.append("RST")
-                if packet[TCP].flags & 0x08: flags.append("PSH")
-                if packet[TCP].flags & 0x10: flags.append("ACK")
-                if packet[TCP].flags & 0x20: flags.append("URG")
-                if packet[TCP].flags & 0x40: flags.append("ECE")
-                if packet[TCP].flags & 0x80: flags.append("CWR")
-                
-                metadata["tcp_flags"] = flags
-                metadata["layers"].append("TCP")
-                
-            elif UDP in packet:
-                metadata.update({
-                    "protocol": "UDP",
-                    "src_port": packet[UDP].sport,
-                    "dst_port": packet[UDP].dport
-                })
-                metadata["layers"].append("UDP")
-                
-                # Check for DNS
-                if DNS in packet:
-                    metadata["layers"].append("DNS")
+            # Extract transport layer metadata safely
+            try:
+                if TCP in packet and packet.haslayer(TCP):
+                    tcp_layer = packet[TCP]
+                    metadata.update({
+                        "protocol": "TCP",
+                        "src_port": int(tcp_layer.sport) if hasattr(tcp_layer, 'sport') else 0,
+                        "dst_port": int(tcp_layer.dport) if hasattr(tcp_layer, 'dport') else 0,
+                        "seq": int(tcp_layer.seq) if hasattr(tcp_layer, 'seq') else 0,
+                        "ack": int(tcp_layer.ack) if hasattr(tcp_layer, 'ack') else 0,
+                        "window": int(tcp_layer.window) if hasattr(tcp_layer, 'window') else 0
+                    })
                     
-            elif ICMP in packet:
-                metadata.update({
-                    "protocol": "ICMP",
-                    "icmp_type": packet[ICMP].type,
-                    "icmp_code": packet[ICMP].code
-                })
-                metadata["layers"].append("ICMP")
+                    # Extract TCP flags safely
+                    try:
+                        flags = []
+                        if hasattr(tcp_layer, 'flags'):
+                            flags_value = int(tcp_layer.flags)
+                            if flags_value & 0x01: flags.append("FIN")
+                            if flags_value & 0x02: flags.append("SYN")
+                            if flags_value & 0x04: flags.append("RST")
+                            if flags_value & 0x08: flags.append("PSH")
+                            if flags_value & 0x10: flags.append("ACK")
+                            if flags_value & 0x20: flags.append("URG")
+                            if flags_value & 0x40: flags.append("ECE")
+                            if flags_value & 0x80: flags.append("CWR")
+                        
+                        metadata["tcp_flags"] = flags
+                    except Exception as e:
+                        logger.warning(f"Error extracting TCP flags from packet {frame_number}: {e}")
+                        metadata["tcp_flags"] = []
+                    
+                    metadata["layers"].append("TCP")
+                    
+                elif UDP in packet and packet.haslayer(UDP):
+                    udp_layer = packet[UDP]
+                    metadata.update({
+                        "protocol": "UDP",
+                        "src_port": int(udp_layer.sport) if hasattr(udp_layer, 'sport') else 0,
+                        "dst_port": int(udp_layer.dport) if hasattr(udp_layer, 'dport') else 0
+                    })
+                    metadata["layers"].append("UDP")
+                    
+                    # Check for DNS safely
+                    try:
+                        if DNS in packet and packet.haslayer(DNS):
+                            metadata["layers"].append("DNS")
+                    except Exception as e:
+                        logger.warning(f"Error checking DNS layer in packet {frame_number}: {e}")
+                        
+                elif ICMP in packet and packet.haslayer(ICMP):
+                    icmp_layer = packet[ICMP]
+                    metadata.update({
+                        "protocol": "ICMP",
+                        "icmp_type": int(icmp_layer.type) if hasattr(icmp_layer, 'type') else 0,
+                        "icmp_code": int(icmp_layer.code) if hasattr(icmp_layer, 'code') else 0
+                    })
+                    metadata["layers"].append("ICMP")
+                    
+            except Exception as e:
+                logger.warning(f"Error extracting transport layer from packet {frame_number}: {e}")
             
-            # Generate summary
-            metadata["summary"] = self._generate_packet_summary(metadata)
+            # Generate summary safely
+            try:
+                metadata["summary"] = self._generate_packet_summary(metadata)
+            except Exception as e:
+                logger.warning(f"Error generating summary for packet {frame_number}: {e}")
+                metadata["summary"] = f"Packet {frame_number} (Error generating summary)"
             
             return metadata
             
         except Exception as e:
-            logger.error(f"Error processing scapy packet: {e}")
-            return None
+            logger.error(f"Critical error processing scapy packet {frame_number}: {e}")
+            # Return a minimal packet info instead of None to prevent crashes
+            return {
+                "frame_number": frame_number,
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f"),
+                "size": 0,
+                "layers": ["Error"],
+                "summary": f"Packet {frame_number} (Processing Error: {e})",
+                "error": str(e)
+            }
     
     def _csv_row_to_packet(self, row, frame_number):
         """Convert a CSV row to packet format"""
