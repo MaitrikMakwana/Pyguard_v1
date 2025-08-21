@@ -170,8 +170,8 @@ class PacketProcessor:
                 except Exception as e:
                     logger.debug(f"Error extracting payload: {e}")
             
-            # Generate Wireshark-like summary
-            metadata["summary"] = self._generate_packet_summary(packet, metadata)
+            # Generate Wireshark-like summary (disabled for CSV export)
+            # metadata["summary"] = self._generate_packet_summary(packet, metadata)
             
             # Add detailed protocol tree if deep inspection is enabled
             if self.deep_inspection:
@@ -252,7 +252,17 @@ class PacketProcessor:
             "window_size": tcp_layer.window,
             "tcp_flags": tcp_flags,
             "tcp_flags_raw": tcp_layer.flags,
-            "payload_size": len(tcp_layer.payload) if hasattr(tcp_layer, 'payload') else 0
+            "payload_size": len(tcp_layer.payload) if hasattr(tcp_layer, 'payload') else 0,
+            # Individual TCP flags for ML compatibility
+            "fin_flag": int(bool(tcp_layer.flags & 0x01)),
+            "syn_flag": int(bool(tcp_layer.flags & 0x02)),
+            "rst_flag": int(bool(tcp_layer.flags & 0x04)),
+            "psh_flag": int(bool(tcp_layer.flags & 0x08)),
+            "ack_flag": int(bool(tcp_layer.flags & 0x10)),
+            "urg_flag": int(bool(tcp_layer.flags & 0x20)),
+            "ece_flag": int(bool(tcp_layer.flags & 0x40)),
+            "cwr_flag": int(bool(tcp_layer.flags & 0x80)),
+            "header_length": tcp_layer.dataofs * 4
         }
     
     def _extract_udp_metadata(self, udp_layer):
@@ -262,7 +272,8 @@ class PacketProcessor:
             "src_port": udp_layer.sport,
             "dst_port": udp_layer.dport,
             "length": udp_layer.len,
-            "payload_size": len(udp_layer.payload) if hasattr(udp_layer, 'payload') else 0
+            "payload_size": len(udp_layer.payload) if hasattr(udp_layer, 'payload') else 0,
+            "header_length": 8  # UDP header is always 8 bytes
         }
     
     def _extract_icmp_metadata(self, icmp_layer):
