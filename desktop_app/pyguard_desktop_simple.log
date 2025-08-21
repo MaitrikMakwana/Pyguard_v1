@@ -85,3 +85,323 @@
 2025-08-02 14:31:25,097 - __main__ - INFO - Saved 565 packets to JSON file: C:/Users/Admin/Downloads/trial_jason.json
 2025-08-02 14:31:37,962 - __main__ - INFO - Saved 565 packets to PCAP file: C:/Users/Admin/Downloads/trial_pacp.pcap
 2025-08-02 14:31:50,243 - __main__ - ERROR - Error saving packets: 'charmap' codec can't encode character '\u2192' in position 118: character maps to <undefined>
+2025-08-02 18:40:48,616 - desktop_app - INFO - Added 10 interface options
+2025-08-02 18:40:50,258 - desktop_app - INFO - UI state loaded
+2025-08-02 18:40:50,266 - desktop_app - INFO - PyGuard Desktop Application started - Wireshark-like UI with heavy traffic support
+2025-08-02 18:42:05,271 - desktop_app - INFO - Capture started on interface \Device\NPF_{0E867116-2C2C-4057-A993-A25804266B50} with filter: 
+2025-08-02 18:42:05,271 - desktop_app - INFO - Starting packet capture on interface \Device\NPF_{0E867116-2C2C-4057-A993-A25804266B50}
+2025-08-02 18:42:05,278 - desktop_app - INFO - Starting capture on interface \Device\NPF_{0E867116-2C2C-4057-A993-A25804266B50} with filter: 
+2025-08-02 18:42:10,570 - desktop_app - INFO - Capture stopped
+2025-08-02 18:42:22,384 - desktop_app - INFO - Starting packet capture on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4}
+2025-08-02 18:42:22,386 - desktop_app - INFO - Capture started on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} with filter: 
+2025-08-02 18:42:22,389 - desktop_app - INFO - Starting capture on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} with filter: 
+2025-08-02 18:42:46,071 - desktop_app - INFO - Capture stopped
+2025-08-02 18:42:46,102 - desktop_app - INFO - Packet capture stopped
+2025-08-02 18:44:36,026 - desktop_app - INFO - Display cleared
+2025-08-02 18:44:42,523 - desktop_app - INFO - UI state saved
+2025-08-04 11:15:01,370 - __main__ - INFO - Added 9 interface options
+2025-08-04 11:15:03,100 - __main__ - INFO - UI state loaded
+2025-08-04 11:15:03,111 - __main__ - INFO - PyGuard Desktop Application started - Wireshark-like UI with heavy traffic support
+2025-08-04 11:17:02,408 - __main__ - INFO - Capture started on interface \Device\NPF_{98D3EA69-7F40-4253-8D9B-961B57E68B99} with filter: 
+2025-08-04 11:17:02,417 - __main__ - INFO - Starting packet capture on interface \Device\NPF_{98D3EA69-7F40-4253-8D9B-961B57E68B99}
+2025-08-04 11:17:02,426 - __main__ - INFO - Starting capture on interface \Device\NPF_{98D3EA69-7F40-4253-8D9B-961B57E68B99} with filter: 
+2025-08-04 11:17:25,846 - __main__ - INFO - Packet display limit set to 1,000 packets
+2025-08-04 11:24:14,226 - __main__ - INFO - Starting packet capture on interface \Device\NPF_{0E867116-2C2C-4057-A993-A25804266B50}
+2025-08-04 11:24:14,226 - __main__ - INFO - Capture started on interface \Device\NPF_{0E867116-2C2C-4057-A993-A25804266B50} with filter: 
+2025-08-04 11:24:14,226 - __main__ - INFO - Starting capture on interface \Device\NPF_{0E867116-2C2C-4057-A993-A25804266B50} with filter: 
+2025-08-04 11:24:14,241 - __main__ - ERROR - Error starting packet capture: Error opening adapter: Network interface was not found.  (2150891563)
+2025-08-04 11:24:14,241 - __main__ - INFO - Falling back to simulation mode
+2025-08-04 11:24:14,257 - __main__ - ERROR - Capture error: Error starting capture: Error opening adapter: Network interface was not found.  (2150891563)
+2025-08-04 11:24:14,449 - __main__ - ERROR - Error in packet capture: unsupported format string passed to NoneType.__format__
+2025-08-04 11:24:14,449 - __main__ - INFO - Packet capture stopped
+2025-08-04 11:24:14,490 - __main__ - ERROR - Capture error: unsupported format string passed to NoneType.__format__
+2025-08-04 11:24:26,012 - __main__ - INFO - Display cleared
+2025-08-04 11:25:00,701 - __main__ - INFO - Capture started on interface \Device\NPF_{F6F1D51E-08E4-4B98-8CE6-605720888E45} with filter: 
+2025-08-04 11:25:00,701 - __main__ - INFO - Starting packet capture on interface \Device\NPF_{F6F1D51E-08E4-4B98-8CE6-605720888E45}
+2025-08-04 11:25:00,717 - __main__ - INFO - Starting capture on interface \Device\NPF_{F6F1D51E-08E4-4B98-8CE6-605720888E45} with filter: 
+2025-08-04 11:26:27,376 - __main__ - WARNING - Error loading display configuration: [Errno 2] No such file or directory: 'config.yaml'
+2025-08-04 11:26:27,376 - __main__ - WARNING - Using default display settings
+2025-08-04 11:26:27,415 - __main__ - INFO - Added 9 interface options
+2025-08-04 11:26:28,202 - __main__ - INFO - UI state loaded
+2025-08-04 11:26:28,204 - __main__ - INFO - PyGuard Desktop Application started - Wireshark-like UI with heavy traffic support
+2025-08-04 11:26:31,932 - __main__ - INFO - Packet display limit set to 1,000 packets
+2025-08-04 11:26:31,932 - __main__ - ERROR - Error saving display configuration: [Errno 2] No such file or directory: 'config.yaml'
+2025-08-04 11:26:39,876 - __main__ - INFO - Starting packet capture on interface \Device\NPF_{192540C3-0825-4D98-B45F-67F3AA48AE72}
+2025-08-04 11:26:39,876 - __main__ - INFO - Starting capture on interface \Device\NPF_{192540C3-0825-4D98-B45F-67F3AA48AE72} with filter: 
+2025-08-04 11:26:39,876 - __main__ - INFO - Capture started on interface \Device\NPF_{192540C3-0825-4D98-B45F-67F3AA48AE72} with filter: 
+2025-08-04 11:26:53,355 - __main__ - INFO - Capture stopped
+2025-08-04 11:26:57,683 - __main__ - INFO - Display cleared
+2025-08-04 11:27:09,831 - __main__ - INFO - Packet capture stopped
+2025-08-04 11:27:17,913 - __main__ - INFO - Capture started on interface \Device\NPF_{F6F1D51E-08E4-4B98-8CE6-605720888E45} with filter: 
+2025-08-04 11:27:17,913 - __main__ - INFO - Starting packet capture on interface \Device\NPF_{F6F1D51E-08E4-4B98-8CE6-605720888E45}
+2025-08-04 11:27:17,913 - __main__ - INFO - Starting capture on interface \Device\NPF_{F6F1D51E-08E4-4B98-8CE6-605720888E45} with filter: 
+2025-08-04 11:31:38,923 - __main__ - WARNING - Error loading display configuration: [Errno 2] No such file or directory: 'config.yaml'
+2025-08-04 11:31:38,923 - __main__ - WARNING - Using default display settings
+2025-08-04 11:31:46,665 - __main__ - INFO - Found active interface: \Device\NPF_{F6F1D51E-08E4-4B98-8CE6-605720888E45} (172.16.102.163)
+2025-08-04 11:31:47,673 - __main__ - INFO - Added 1 active interface options
+2025-08-04 11:31:47,768 - __main__ - INFO - UI state loaded
+2025-08-04 11:31:47,768 - __main__ - INFO - PyGuard Desktop Application started - Wireshark-like UI with heavy traffic support
+2025-08-04 11:32:02,838 - __main__ - INFO - Added 9 total interface options
+2025-08-04 11:32:09,054 - __main__ - INFO - Starting packet capture on interface \Device\NPF_{F6F1D51E-08E4-4B98-8CE6-605720888E45}
+2025-08-04 11:32:09,070 - __main__ - INFO - Capture started on interface \Device\NPF_{F6F1D51E-08E4-4B98-8CE6-605720888E45} with filter: 
+2025-08-04 11:32:09,070 - __main__ - INFO - Starting capture on interface \Device\NPF_{F6F1D51E-08E4-4B98-8CE6-605720888E45} with filter: 
+2025-08-04 11:32:17,852 - __main__ - INFO - Packet capture stopped
+2025-08-04 11:32:18,083 - __main__ - INFO - Capture stopped
+2025-08-04 11:32:21,506 - __main__ - INFO - UI state saved
+2025-08-04 11:34:55,154 - __main__ - WARNING - Error loading display configuration: [Errno 2] No such file or directory: 'config.yaml'
+2025-08-04 11:34:55,154 - __main__ - WARNING - Using default display settings
+2025-08-04 11:34:58,777 - __main__ - INFO - Found active interface: \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} (10.189.240.26)
+2025-08-04 11:35:03,867 - __main__ - INFO - Added 1 active interface options
+2025-08-04 11:35:04,002 - __main__ - INFO - UI state loaded
+2025-08-04 11:35:04,007 - __main__ - INFO - PyGuard Desktop Application started - Wireshark-like UI with heavy traffic support
+2025-08-04 11:35:24,802 - __main__ - INFO - Capture started on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} with filter: 
+2025-08-04 11:35:24,802 - __main__ - INFO - Starting packet capture on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4}
+2025-08-04 11:35:24,809 - __main__ - INFO - Starting capture on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} with filter: 
+2025-08-04 11:35:35,340 - __main__ - INFO - Packet capture stopped
+2025-08-04 11:35:35,345 - __main__ - INFO - Capture stopped
+2025-08-04 11:47:00,858 - __main__ - INFO - UI state saved
+2025-08-04 12:00:26,749 - __main__ - WARNING - Error loading display configuration: [Errno 2] No such file or directory: 'config.yaml'
+2025-08-04 12:00:26,749 - __main__ - WARNING - Using default display settings
+2025-08-04 12:00:31,667 - __main__ - INFO - Found active interface: \Device\NPF_{BA059FA3-15CF-4D23-8551-B986C80D90BC} (192.168.137.1)
+2025-08-04 12:00:33,668 - __main__ - INFO - Found active interface: \Device\NPF_{F6F1D51E-08E4-4B98-8CE6-605720888E45} (172.16.102.163)
+2025-08-04 12:00:34,674 - __main__ - INFO - Added 2 active interface options
+2025-08-04 12:00:34,769 - __main__ - INFO - UI state loaded
+2025-08-04 12:00:34,769 - __main__ - INFO - PyGuard Desktop Application started - Wireshark-like UI with heavy traffic support
+2025-08-04 12:01:54,210 - __main__ - INFO - Capture started on interface \Device\NPF_{BA059FA3-15CF-4D23-8551-B986C80D90BC} with filter: 
+2025-08-04 12:01:54,214 - __main__ - INFO - Starting packet capture on interface \Device\NPF_{BA059FA3-15CF-4D23-8551-B986C80D90BC}
+2025-08-04 12:01:54,228 - __main__ - INFO - Starting capture on interface \Device\NPF_{BA059FA3-15CF-4D23-8551-B986C80D90BC} with filter: 
+2025-08-04 12:02:00,420 - __main__ - INFO - Capture stopped
+2025-08-04 12:02:00,428 - __main__ - INFO - Packet capture stopped
+2025-08-04 12:02:02,758 - __main__ - INFO - Packet display limit set to 1,000 packets
+2025-08-04 12:02:02,760 - __main__ - ERROR - Error saving display configuration: [Errno 2] No such file or directory: 'config.yaml'
+2025-08-04 12:02:05,644 - __main__ - INFO - Display cleared
+2025-08-04 12:02:08,309 - __main__ - INFO - Capture started on interface \Device\NPF_{BA059FA3-15CF-4D23-8551-B986C80D90BC} with filter: 
+2025-08-04 12:02:08,311 - __main__ - INFO - Starting packet capture on interface \Device\NPF_{BA059FA3-15CF-4D23-8551-B986C80D90BC}
+2025-08-04 12:02:08,335 - __main__ - INFO - Starting capture on interface \Device\NPF_{BA059FA3-15CF-4D23-8551-B986C80D90BC} with filter: 
+2025-08-04 12:02:25,277 - __main__ - INFO - Capture stopped
+2025-08-04 12:02:25,458 - __main__ - INFO - Packet capture stopped
+2025-08-04 12:03:08,358 - __main__ - INFO - Display cleared
+2025-08-04 12:03:15,669 - __main__ - INFO - UI state saved
+2025-08-04 12:03:24,322 - __main__ - WARNING - Error loading display configuration: [Errno 2] No such file or directory: 'config.yaml'
+2025-08-04 12:03:24,322 - __main__ - WARNING - Using default display settings
+2025-08-04 12:03:28,918 - __main__ - INFO - Found active interface: \Device\NPF_{BA059FA3-15CF-4D23-8551-B986C80D90BC} (192.168.137.1)
+2025-08-04 12:03:30,958 - __main__ - INFO - Found active interface: \Device\NPF_{F6F1D51E-08E4-4B98-8CE6-605720888E45} (172.16.102.163)
+2025-08-04 12:03:31,819 - __main__ - INFO - Found active interface: \Device\NPF_Loopback (127.0.0.1)
+2025-08-04 12:03:31,828 - __main__ - INFO - Added 3 active interface options
+2025-08-04 12:03:31,890 - __main__ - INFO - UI state loaded
+2025-08-04 12:03:31,890 - __main__ - INFO - PyGuard Desktop Application started - Wireshark-like UI with heavy traffic support
+2025-08-04 12:03:54,036 - __main__ - INFO - Packet display limit set to 1,000 packets
+2025-08-04 12:03:54,036 - __main__ - ERROR - Error saving display configuration: [Errno 2] No such file or directory: 'config.yaml'
+2025-08-04 12:04:03,682 - __main__ - INFO - Capture started on interface \Device\NPF_{BA059FA3-15CF-4D23-8551-B986C80D90BC} with filter: 
+2025-08-04 12:04:03,686 - __main__ - INFO - Starting packet capture on interface \Device\NPF_{BA059FA3-15CF-4D23-8551-B986C80D90BC}
+2025-08-04 12:04:03,695 - __main__ - INFO - Starting capture on interface \Device\NPF_{BA059FA3-15CF-4D23-8551-B986C80D90BC} with filter: 
+2025-08-04 12:04:12,176 - __main__ - INFO - Capture stopped
+2025-08-04 12:04:12,582 - __main__ - INFO - Packet capture stopped
+2025-08-04 12:05:44,256 - __main__ - INFO - Saved 325 packets to PCAP file: C:/Users/Admin/Desktop/1.pcap
+2025-08-04 12:43:12,992 - __main__ - INFO - Display cleared
+2025-08-04 12:52:24,007 - __main__ - INFO - UI state saved
+2025-08-04 12:52:31,129 - __main__ - WARNING - Error loading display configuration: [Errno 2] No such file or directory: 'config.yaml'
+2025-08-04 12:52:31,129 - __main__ - WARNING - Using default display settings
+2025-08-04 12:52:31,129 - __main__ - INFO - Database integration disabled
+2025-08-04 12:52:36,462 - __main__ - INFO - Found active interface: \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} (192.168.56.141)
+2025-08-04 12:52:41,520 - __main__ - INFO - Added 1 active interface options
+2025-08-04 12:52:41,544 - __main__ - INFO - Using in-memory packet model
+2025-08-04 12:52:41,576 - __main__ - INFO - UI state loaded
+2025-08-04 12:52:41,578 - __main__ - INFO - PyGuard Desktop Application started - Wireshark-like UI with heavy traffic support
+2025-08-04 13:13:30,895 - __main__ - INFO - Starting packet capture on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4}
+2025-08-04 13:13:30,903 - __main__ - INFO - Capture started on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} with filter: 
+2025-08-04 13:13:30,908 - __main__ - INFO - Starting capture on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} with filter: 
+2025-08-04 13:13:32,832 - __main__ - INFO - Capture stopped
+2025-08-04 13:13:32,832 - __main__ - INFO - Packet capture stopped
+2025-08-04 13:13:34,795 - __main__ - INFO - Capture started on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} with filter: 
+2025-08-04 13:13:34,795 - __main__ - INFO - Starting packet capture on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4}
+2025-08-04 13:13:34,803 - __main__ - INFO - Starting capture on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} with filter: 
+2025-08-04 13:13:43,544 - __main__ - INFO - Capture stopped
+2025-08-04 13:13:43,598 - __main__ - INFO - Packet capture stopped
+2025-08-04 13:14:21,270 - __main__ - INFO - Display cleared
+2025-08-04 13:20:52,440 - __main__ - INFO - Starting packet capture on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4}
+2025-08-04 13:20:52,445 - __main__ - INFO - Capture started on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} with filter: 
+2025-08-04 13:20:52,445 - __main__ - INFO - Starting capture on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} with filter: 
+2025-08-04 13:21:08,363 - __main__ - INFO - Packet capture stopped
+2025-08-04 13:21:08,515 - __main__ - INFO - Capture stopped
+2025-08-04 13:23:28,523 - __main__ - INFO - UI state saved
+2025-08-04 13:36:24,101 - __main__ - WARNING - Error loading display configuration: [Errno 2] No such file or directory: 'config.yaml'
+2025-08-04 13:36:24,101 - __main__ - WARNING - Using default display settings
+2025-08-04 13:36:24,101 - __main__ - INFO - Database integration disabled
+2025-08-04 13:36:28,733 - __main__ - INFO - Found active interface: \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} (192.168.56.141)
+2025-08-04 13:36:32,813 - __main__ - INFO - Found active interface: \Device\NPF_Loopback (127.0.0.1)
+2025-08-04 13:36:33,815 - __main__ - INFO - Added 2 active interface options
+2025-08-04 13:36:33,843 - __main__ - INFO - Using in-memory packet model
+2025-08-04 13:36:33,908 - __main__ - INFO - UI state loaded
+2025-08-04 13:36:33,913 - __main__ - INFO - PyGuard Desktop Application started - Wireshark-like UI with heavy traffic support
+2025-08-04 13:37:11,974 - __main__ - INFO - Capture started on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} with filter: 
+2025-08-04 13:37:11,976 - __main__ - INFO - Starting packet capture on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4}
+2025-08-04 13:37:11,986 - __main__ - INFO - Starting capture on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} with filter: 
+2025-08-04 13:37:26,909 - __main__ - INFO - Packet capture stopped
+2025-08-04 13:37:26,917 - __main__ - INFO - Capture stopped
+2025-08-04 13:52:01,344 - __main__ - INFO - Display cleared
+2025-08-04 13:52:02,666 - __main__ - INFO - Capture started on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} with filter: 
+2025-08-04 13:52:02,677 - __main__ - INFO - Starting packet capture on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4}
+2025-08-04 13:52:02,681 - __main__ - INFO - Starting capture on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} with filter: 
+2025-08-04 13:52:14,614 - __main__ - INFO - Capture stopped
+2025-08-04 13:52:14,614 - __main__ - INFO - Packet capture stopped
+2025-08-04 13:53:17,812 - __main__ - INFO - UI state saved
+2025-08-04 13:53:19,275 - desktop_app - INFO - Database connection closed
+2025-08-04 14:00:12,468 - __main__ - WARNING - Error loading display configuration: [Errno 2] No such file or directory: 'config.yaml'
+2025-08-04 14:00:12,468 - __main__ - WARNING - Using default display settings
+2025-08-04 14:00:12,468 - __main__ - WARNING - Configuration file config.yaml not found, using defaults
+2025-08-04 14:00:12,468 - __main__ - INFO - Database disabled in config
+2025-08-04 14:00:12,468 - __main__ - INFO - Database integration disabled
+2025-08-04 14:00:17,140 - __main__ - INFO - Found active interface: \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} (192.168.56.141)
+2025-08-04 14:00:22,141 - __main__ - INFO - Added 1 active interface options
+2025-08-04 14:00:22,167 - __main__ - INFO - Using in-memory packet model
+2025-08-04 14:00:22,210 - __main__ - INFO - UI state loaded
+2025-08-04 14:00:22,210 - __main__ - INFO - PyGuard Desktop Application started - Wireshark-like UI with heavy traffic support
+2025-08-04 14:00:29,601 - __main__ - INFO - Capture started on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} with filter: 
+2025-08-04 14:00:29,601 - __main__ - INFO - Starting packet capture on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4}
+2025-08-04 14:00:29,617 - __main__ - INFO - Starting capture on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} with filter: 
+2025-08-04 14:00:38,411 - __main__ - INFO - Capture stopped
+2025-08-04 14:00:38,427 - __main__ - INFO - Packet capture stopped
+2025-08-04 14:00:47,967 - __main__ - INFO - UI state saved
+2025-08-04 14:00:52,284 - __main__ - INFO - Closing database connection on application exit
+2025-08-04 14:00:52,284 - desktop_app - INFO - Database connection closed
+2025-08-19 17:44:02,344 - __main__ - WARNING - Error loading display configuration: [Errno 2] No such file or directory: 'config.yaml'
+2025-08-19 17:44:02,344 - __main__ - WARNING - Using default display settings
+2025-08-19 17:44:02,344 - __main__ - WARNING - Configuration file config.yaml not found, using defaults
+2025-08-19 17:44:02,344 - __main__ - INFO - Database disabled in config
+2025-08-19 17:44:02,344 - __main__ - INFO - Database integration disabled
+2025-08-19 17:44:08,067 - __main__ - INFO - Found active interface: \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} (192.168.51.25)
+2025-08-19 17:44:13,126 - __main__ - INFO - Added 1 active interface options
+2025-08-19 17:44:13,165 - __main__ - INFO - Using in-memory packet model
+2025-08-19 17:44:13,239 - __main__ - INFO - UI state loaded
+2025-08-19 17:44:13,247 - __main__ - INFO - PyGuard Desktop Application started - Wireshark-like UI with heavy traffic support
+2025-08-19 17:44:36,105 - __main__ - INFO - Capture started on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} with filter: 
+2025-08-19 17:44:36,105 - __main__ - INFO - Starting packet capture on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4}
+2025-08-19 17:44:36,129 - __main__ - INFO - Starting capture on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} with filter: 
+2025-08-19 17:45:00,645 - __main__ - INFO - Capture stopped
+2025-08-19 17:45:01,754 - __main__ - INFO - Packet capture stopped
+2025-08-19 17:46:13,662 - __main__ - INFO - Display cleared
+2025-08-19 17:46:31,799 - __main__ - INFO - UI state saved
+2025-08-19 17:46:31,799 - __main__ - INFO - Closing database connection on application exit
+2025-08-19 17:46:31,799 - desktop_app - INFO - Database connection closed
+2025-08-19 19:07:34,788 - __main__ - WARNING - Error loading display configuration: [Errno 2] No such file or directory: 'config.yaml'
+2025-08-19 19:07:34,788 - __main__ - WARNING - Using default display settings
+2025-08-19 19:07:34,788 - __main__ - WARNING - Configuration file config.yaml not found, using defaults
+2025-08-19 19:07:34,788 - __main__ - INFO - Database disabled in config
+2025-08-19 19:07:34,788 - __main__ - INFO - Database integration disabled
+2025-08-19 19:07:41,793 - __main__ - INFO - Found active interface: \Device\NPF_{BA059FA3-15CF-4D23-8551-B986C80D90BC} (192.168.137.1)
+2025-08-19 19:07:41,801 - __main__ - INFO - Found active interface: \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} (192.168.51.25)
+2025-08-19 19:07:45,962 - __main__ - INFO - Added 2 active interface options
+2025-08-19 19:07:46,026 - __main__ - INFO - Using in-memory packet model
+2025-08-19 19:07:46,116 - __main__ - INFO - UI state loaded
+2025-08-19 19:07:46,127 - __main__ - INFO - PyGuard Desktop Application started - Wireshark-like UI with heavy traffic support
+2025-08-19 19:08:11,938 - __main__ - INFO - Capture started on interface \Device\NPF_{BA059FA3-15CF-4D23-8551-B986C80D90BC} with filter: 
+2025-08-19 19:08:11,938 - __main__ - INFO - Starting packet capture on interface \Device\NPF_{BA059FA3-15CF-4D23-8551-B986C80D90BC}
+2025-08-19 19:08:11,947 - __main__ - INFO - Starting capture on interface \Device\NPF_{BA059FA3-15CF-4D23-8551-B986C80D90BC} with filter: 
+2025-08-19 19:08:31,849 - __main__ - INFO - Capture stopped
+2025-08-19 19:08:31,849 - __main__ - INFO - Packet capture stopped
+2025-08-19 19:12:54,818 - __main__ - INFO - UI state saved
+2025-08-19 19:12:57,042 - __main__ - INFO - Closing database connection on application exit
+2025-08-19 19:12:57,042 - desktop_app - INFO - Database connection closed
+2025-08-19 22:00:49,366 - __main__ - WARNING - Error loading display configuration: [Errno 2] No such file or directory: 'config.yaml'
+2025-08-19 22:00:49,366 - __main__ - WARNING - Using default display settings
+2025-08-19 22:00:49,366 - __main__ - WARNING - Configuration file config.yaml not found, using defaults
+2025-08-19 22:00:49,366 - __main__ - INFO - Database disabled in config
+2025-08-19 22:00:49,366 - __main__ - INFO - Database integration disabled
+2025-08-19 22:00:55,170 - __main__ - INFO - Found active interface: \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} (192.168.51.25)
+2025-08-19 22:00:59,221 - __main__ - INFO - Added 1 active interface options
+2025-08-19 22:00:59,256 - __main__ - INFO - Using in-memory packet model
+2025-08-19 22:00:59,296 - __main__ - INFO - UI state loaded
+2025-08-19 22:00:59,308 - __main__ - INFO - PyGuard Desktop Application started - Wireshark-like UI with heavy traffic support
+2025-08-19 22:01:16,543 - __main__ - INFO - Capture started on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} with filter: 
+2025-08-19 22:01:16,559 - __main__ - INFO - Starting packet capture on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4}
+2025-08-19 22:01:16,563 - __main__ - INFO - Starting capture on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} with filter: 
+2025-08-19 22:01:46,274 - __main__ - INFO - Packet capture stopped
+2025-08-19 22:01:46,545 - __main__ - INFO - Capture stopped
+2025-08-19 22:02:16,990 - __main__ - INFO - Added 10 total interface options
+2025-08-19 22:02:25,367 - __main__ - INFO - UI state saved
+2025-08-19 22:02:26,944 - __main__ - INFO - Closing database connection on application exit
+2025-08-19 22:02:26,947 - desktop_app - INFO - Database connection closed
+2025-08-20 16:06:36,547 - __main__ - WARNING - Error loading display configuration: [Errno 2] No such file or directory: 'config.yaml'
+2025-08-20 16:06:36,554 - __main__ - WARNING - Using default display settings
+2025-08-20 16:06:36,554 - __main__ - WARNING - Configuration file config.yaml not found, using defaults
+2025-08-20 16:06:36,555 - __main__ - INFO - Database disabled in config
+2025-08-20 16:06:36,555 - __main__ - INFO - Database integration disabled
+2025-08-20 16:06:42,019 - __main__ - INFO - Found active interface: \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} (10.144.59.27)
+2025-08-20 16:06:47,100 - __main__ - INFO - Added 1 active interface options
+2025-08-20 16:06:47,160 - __main__ - INFO - Using in-memory packet model
+2025-08-20 16:06:47,218 - __main__ - INFO - UI state loaded
+2025-08-20 16:06:47,224 - __main__ - INFO - PyGuard Desktop Application started - Wireshark-like UI with heavy traffic support
+2025-08-20 16:11:20,200 - __main__ - INFO - Starting packet capture on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4}
+2025-08-20 16:11:20,216 - __main__ - INFO - Capture started on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} with filter: 
+2025-08-20 16:11:20,216 - __main__ - INFO - Starting capture on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} with filter: 
+2025-08-20 16:12:23,019 - __main__ - INFO - Capture stopped
+2025-08-20 16:12:23,555 - __main__ - INFO - Packet capture stopped
+2025-08-20 16:13:17,114 - __main__ - INFO - UI state saved
+2025-08-20 16:13:18,384 - __main__ - INFO - Closing database connection on application exit
+2025-08-20 16:13:18,384 - desktop_app - INFO - Database connection closed
+2025-08-20 18:00:08,959 - __main__ - WARNING - Error loading display configuration: [Errno 2] No such file or directory: 'config.yaml'
+2025-08-20 18:00:08,959 - __main__ - WARNING - Using default display settings
+2025-08-20 18:00:08,960 - __main__ - WARNING - Configuration file config.yaml not found, using defaults
+2025-08-20 18:00:08,960 - __main__ - INFO - Database disabled in config
+2025-08-20 18:00:08,960 - __main__ - INFO - Database integration disabled
+2025-08-20 18:00:14,542 - __main__ - INFO - Found active interface: \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} (10.53.78.148)
+2025-08-20 18:00:19,584 - __main__ - INFO - Added 1 active interface options
+2025-08-20 18:00:19,607 - __main__ - INFO - Using in-memory packet model
+2025-08-20 18:00:19,669 - __main__ - INFO - UI state loaded
+2025-08-20 18:00:19,675 - __main__ - INFO - PyGuard Desktop Application started - Wireshark-like UI with heavy traffic support
+2025-08-20 18:00:34,644 - __main__ - INFO - Capture started on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} with filter: 
+2025-08-20 18:00:34,644 - __main__ - INFO - Starting packet capture on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4}
+2025-08-20 18:00:34,644 - __main__ - INFO - Starting capture on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} with filter: 
+2025-08-20 18:01:04,484 - __main__ - INFO - Capture stopped
+2025-08-20 18:01:06,497 - __main__ - INFO - Packet capture stopped
+2025-08-20 18:01:57,855 - __main__ - INFO - Display cleared
+2025-08-20 18:01:59,107 - __main__ - INFO - Capture started on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} with filter: 
+2025-08-20 18:01:59,107 - __main__ - INFO - Starting packet capture on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4}
+2025-08-20 18:01:59,107 - __main__ - INFO - Starting capture on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} with filter: 
+2025-08-20 18:02:32,347 - __main__ - INFO - Capture stopped
+2025-08-20 18:02:32,347 - __main__ - INFO - Packet capture stopped
+2025-08-20 18:02:56,120 - __main__ - INFO - Packet display limit set to 1,000 packets
+2025-08-20 18:02:56,120 - __main__ - ERROR - Error saving display configuration: [Errno 2] No such file or directory: 'config.yaml'
+2025-08-20 18:03:00,574 - __main__ - INFO - Display cleared
+2025-08-20 18:03:00,574 - __main__ - INFO - Capture started on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} with filter: 
+2025-08-20 18:03:00,574 - __main__ - INFO - Starting packet capture on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4}
+2025-08-20 18:03:00,584 - __main__ - INFO - Capture restarted
+2025-08-20 18:03:00,584 - __main__ - INFO - Starting capture on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} with filter: 
+2025-08-20 18:03:53,235 - __main__ - INFO - Capture stopped
+2025-08-20 18:03:55,813 - __main__ - INFO - Packet capture stopped
+2025-08-20 18:04:07,583 - __main__ - INFO - Display cleared
+2025-08-20 18:04:07,585 - __main__ - INFO - Capture started on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} with filter: 
+2025-08-20 18:04:07,586 - __main__ - INFO - Starting packet capture on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4}
+2025-08-20 18:04:07,589 - __main__ - INFO - Capture restarted
+2025-08-20 18:04:07,589 - __main__ - INFO - Starting capture on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} with filter: 
+2025-08-20 18:04:30,996 - __main__ - INFO - Capture stopped
+2025-08-20 18:04:31,031 - __main__ - INFO - Packet capture stopped
+2025-08-20 18:04:37,482 - __main__ - INFO - UI state saved
+2025-08-20 18:04:39,265 - __main__ - INFO - Closing database connection on application exit
+2025-08-20 18:04:39,265 - desktop_app - INFO - Database connection closed
+2025-08-20 18:34:20,836 - __main__ - WARNING - Error loading display configuration: [Errno 2] No such file or directory: 'config.yaml'
+2025-08-20 18:34:20,836 - __main__ - WARNING - Using default display settings
+2025-08-20 18:34:20,836 - __main__ - WARNING - Configuration file config.yaml not found, using defaults
+2025-08-20 18:34:20,838 - __main__ - INFO - Database disabled in config
+2025-08-20 18:34:20,838 - __main__ - INFO - Database integration disabled
+2025-08-20 18:34:25,715 - __main__ - INFO - Found active interface: \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} (10.144.59.27)
+2025-08-20 18:34:31,261 - __main__ - INFO - Added 1 active interface options
+2025-08-20 18:34:31,287 - __main__ - INFO - Using in-memory packet model
+2025-08-20 18:34:31,312 - __main__ - INFO - UI state loaded
+2025-08-20 18:34:31,312 - __main__ - INFO - PyGuard Desktop Application started - Wireshark-like UI with heavy traffic support
+2025-08-20 18:35:41,570 - __main__ - INFO - Capture started on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} with filter: 
+2025-08-20 18:35:41,570 - __main__ - INFO - Starting packet capture on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4}
+2025-08-20 18:35:41,577 - __main__ - INFO - Starting capture on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} with filter: 
+2025-08-20 18:36:29,891 - __main__ - INFO - Capture stopped
+2025-08-20 18:36:33,792 - __main__ - INFO - Display cleared
+2025-08-20 18:36:34,132 - __main__ - INFO - Packet capture stopped
+2025-08-20 18:36:55,478 - __main__ - INFO - Added 10 total interface options
+2025-08-20 18:37:16,344 - __main__ - INFO - Capture started on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} with filter: 
+2025-08-20 18:37:16,350 - __main__ - INFO - Starting packet capture on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4}
+2025-08-20 18:37:16,351 - __main__ - INFO - Starting capture on interface \Device\NPF_{307D7E23-2CC3-47C0-9B24-7F92185379B4} with filter: 
+2025-08-20 18:37:34,041 - __main__ - INFO - Capture stopped
+2025-08-20 18:37:34,215 - __main__ - INFO - Packet capture stopped
+2025-08-20 18:38:57,097 - __main__ - INFO - UI state saved
+2025-08-20 18:38:59,800 - __main__ - INFO - Closing database connection on application exit
+2025-08-20 18:38:59,800 - desktop_app - INFO - Database connection closed

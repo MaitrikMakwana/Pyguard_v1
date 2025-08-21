@@ -20,8 +20,18 @@ import random
 from collections import defaultdict, deque
 import tempfile
 import binascii
+import yaml
 from PyQt5.QtCore import QSettings
 from PyQt5.QtGui import QFontDatabase
+
+# Import database manager and packet model
+from db_manager import DatabaseManager
+from db_packet_model import DatabasePacketModel
+from db_handlers import (
+    on_db_packet_selected, show_db_packet_context_menu, copy_db_packet_to_clipboard,
+    filter_db_by_ip, filter_db_by_protocol, show_db_filter_dialog, clear_database,
+    add_database_controls
+)
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -41,9 +51,10 @@ from PyQt5.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView, QMenu, QAction,
     QFileDialog, QDialog, QRadioButton, QSpinBox, QTreeWidget, 
     QTreeWidgetItem, QProgressBar, QStatusBar, QLineEdit, QToolBar,
-    QToolButton, QSizePolicy, QFrame, QTextBrowser, QProgressDialog
+    QToolButton, QSizePolicy, QFrame, QTextBrowser, QProgressDialog,
+    QTableView, QDateTimeEdit
 )
-from PyQt5.QtCore import QTimer, QSize, Qt
+from PyQt5.QtCore import QTimer, QSize, Qt, QAbstractTableModel, QModelIndex, QDateTime
 from PyQt5.QtGui import QFont, QColor, QCursor
 
 class LogHandler(logging.Handler):
@@ -609,6 +620,16 @@ class PacketCapture(QThread):
 class DesktopApp(QMainWindow):
     """Desktop UI for PyGuard network packet capture and filtering"""
     
+    # Add database handler methods
+    on_db_packet_selected = on_db_packet_selected
+    show_db_packet_context_menu = show_db_packet_context_menu
+    copy_db_packet_to_clipboard = copy_db_packet_to_clipboard
+    filter_db_by_ip = filter_db_by_ip
+    filter_db_by_protocol = filter_db_by_protocol
+    show_db_filter_dialog = show_db_filter_dialog
+    clear_database = clear_database
+    add_database_controls = add_database_controls
+    
     def __init__(self):
         super().__init__()
         
@@ -617,10 +638,22 @@ class DesktopApp(QMainWindow):
         self.packet_queue = queue.Queue()
         self.processing_thread = None
         self.is_processing = False
+        
+        # Default display settings
         self.max_display_packets = 100000  # Maximum number of packets to display
         self.packet_buffer_size = 1000  # Process packets in batches
         self.display_update_interval = 100  # ms
+        
+        # Try to load display settings from config.yaml
+        self.load_display_config()
+        
+        # Initialize database manager
+        self.initialize_database()
+        
         self.selected_interface = None  # Store the selected interface name
+        
+        # Flag to indicate if we're using database-backed model
+        self.using_db_model = False
         
         # Protocol statistics
         self.protocol_stats = {
@@ -745,7 +778,22 @@ class DesktopApp(QMainWindow):
             "1,000,000 packets", 
             "Unlimited"
         ])
-        self.packet_limit_combo.setCurrentIndex(2)  # Default to 100,000
+        
+        # Set the combo box to match the config value
+        if self.max_display_packets == float('inf'):
+            self.packet_limit_combo.setCurrentText("Unlimited")
+        else:
+            # Find the closest match to the configured value
+            if self.max_display_packets <= 1000:
+                self.packet_limit_combo.setCurrentIndex(0)  # 1,000
+            elif self.max_display_packets <= 10000:
+                self.packet_limit_combo.setCurrentIndex(1)  # 10,000
+            elif self.max_display_packets <= 100000:
+                self.packet_limit_combo.setCurrentIndex(2)  # 100,000
+            elif self.max_display_packets <= 1000000:
+                self.packet_limit_combo.setCurrentIndex(3)  # 1,000,000
+            else:
+                self.packet_limit_combo.setCurrentText("Unlimited")
         self.packet_limit_combo.currentTextChanged.connect(self.set_packet_limit)
         self.packet_limit_combo.setToolTip("Set maximum number of packets to keep in the display.\nWhen this limit is reached, older packets will be removed.")
         self.packet_limit_combo.setFixedWidth(150)
@@ -946,27 +994,75 @@ class DesktopApp(QMainWindow):
         self.main_splitter.setHandleWidth(8)  # Wider handle for easier grabbing
         self.main_splitter.setOpaqueResize(True)  # Resize content during dragging for better feedback
         
-        # Create packet list table with better styling and larger fonts
-        self.packet_table = QTableWidget()
-        self.packet_table.setColumnCount(7)
-        self.packet_table.setHorizontalHeaderLabels(["No.", "Time", "Source", "Destination", "Protocol", "Length", "Info"])
-        self.packet_table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
-        self.packet_table.horizontalHeader().setStretchLastSection(True)
-        self.packet_table.setSelectionBehavior(QTableWidget.SelectRows)
-        self.packet_table.setSelectionMode(QTableWidget.SingleSelection)
-        self.packet_table.itemSelectionChanged.connect(self.on_packet_selected)
-        self.packet_table.setAlternatingRowColors(True)
-        
-        # Set larger row height for better readability
-        self.packet_table.verticalHeader().setDefaultSectionSize(36)
-        
-        # Set font for table
-        table_font = QFont(QApplication.font().family(), 12)
-        self.packet_table.setFont(table_font)
-        
-        # Apply monospace font to the table for better alignment
-        if hasattr(self, 'mono_font'):
-            self.packet_table.setFont(self.mono_font)
+        # Check if we should use database-backed model
+        if hasattr(self, 'db_manager') and self.db_manager and self.db_manager.enabled:
+            # Create a QTableView for database-backed model
+            self.packet_table = QTableView()
+            self.packet_table.setSelectionBehavior(QTableView.SelectRows)
+            self.packet_table.setSelectionMode(QTableView.SingleSelection)
+            self.packet_table.setAlternatingRowColors(True)
+            
+            # Create and set the database-backed model
+            self.packet_model = DatabasePacketModel(self.db_manager, self)
+            self.packet_table.setModel(self.packet_model)
+            
+            # Connect selection signal
+            self.packet_table.selectionModel().selectionChanged.connect(self.on_db_packet_selected)
+            
+            # Set larger row height for better readability
+            self.packet_table.verticalHeader().setDefaultSectionSize(36)
+            
+            # Set font for table
+            table_font = QFont(QApplication.font().family(), 12)
+            self.packet_table.setFont(table_font)
+            
+            # Apply monospace font to the table for better alignment
+            if hasattr(self, 'mono_font'):
+                self.packet_table.setFont(self.mono_font)
+                
+            # Set column widths
+            self.packet_table.setColumnWidth(0, 60)  # No.
+            self.packet_table.setColumnWidth(1, 120)  # Time
+            self.packet_table.setColumnWidth(2, 150)  # Source
+            self.packet_table.setColumnWidth(3, 150)  # Destination
+            self.packet_table.setColumnWidth(4, 80)  # Protocol
+            self.packet_table.setColumnWidth(5, 60)  # Length
+            
+            # Add right-click context menu
+            self.packet_table.setContextMenuPolicy(Qt.CustomContextMenu)
+            self.packet_table.customContextMenuRequested.connect(self.show_db_packet_context_menu)
+            
+            # Set flag to indicate we're using database-backed model
+            self.using_db_model = True
+            
+            logger.info("Using database-backed packet model")
+        else:
+            # Create traditional QTableWidget for in-memory model
+            self.packet_table = QTableWidget()
+            self.packet_table.setColumnCount(7)
+            self.packet_table.setHorizontalHeaderLabels(["No.", "Time", "Source", "Destination", "Protocol", "Length", "Info"])
+            self.packet_table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+            self.packet_table.horizontalHeader().setStretchLastSection(True)
+            self.packet_table.setSelectionBehavior(QTableWidget.SelectRows)
+            self.packet_table.setSelectionMode(QTableWidget.SingleSelection)
+            self.packet_table.itemSelectionChanged.connect(self.on_packet_selected)
+            self.packet_table.setAlternatingRowColors(True)
+            
+            # Set larger row height for better readability
+            self.packet_table.verticalHeader().setDefaultSectionSize(36)
+            
+            # Set font for table
+            table_font = QFont(QApplication.font().family(), 12)
+            self.packet_table.setFont(table_font)
+            
+            # Apply monospace font to the table for better alignment
+            if hasattr(self, 'mono_font'):
+                self.packet_table.setFont(self.mono_font)
+                
+            # Set flag to indicate we're using in-memory model
+            self.using_db_model = False
+            
+            logger.info("Using in-memory packet model")
         
         # Improved styling with better spacing and larger fonts
         self.packet_table.setStyleSheet("""
@@ -1370,6 +1466,12 @@ class DesktopApp(QMainWindow):
         self.process_timer.timeout.connect(self.process_packet_queue)
         self.process_timer.start(self.display_update_interval)
         
+        # Create timer for database operations
+        if hasattr(self, 'db_manager') and self.db_manager and self.db_manager.enabled:
+            self.db_timer = QTimer()
+            self.db_timer.timeout.connect(self.update_database)
+            self.db_timer.start(1000)  # Update every second
+        
         # Create progress bar for packet processing
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
@@ -1383,17 +1485,58 @@ class DesktopApp(QMainWindow):
         
         # Log startup message
         logger.info("PyGuard Desktop Application started - Wireshark-like UI with heavy traffic support")
-    
-    def populate_interfaces(self):
-        """Populate the interface combo box with network interfaces"""
-        self.interface_combo.clear()
         
+        # Add database controls if database is enabled
+        self.add_database_controls()
+    
+    def check_interface_traffic(self, interface, timeout=1):
+        """Check if an interface has active traffic
+        
+        Args:
+            interface: Interface name to check
+            timeout: Time in seconds to sniff for traffic
+            
+        Returns:
+            bool: True if traffic was detected, False otherwise
+        """
+        try:
+            from scapy.all import sniff
+            
+            # Create a packet counter
+            packet_count = [0]
+            
+            # Define a callback that just counts packets
+            def packet_callback(pkt):
+                packet_count[0] += 1
+                # Stop after first packet
+                return True
+            
+            # Try to sniff for a short time to see if there's any traffic
+            logger.debug(f"Checking for traffic on {interface}...")
+            sniff(iface=interface, prn=packet_callback, timeout=timeout, store=0, count=1)
+            
+            # Return True if we captured any packets
+            has_traffic = packet_count[0] > 0
+            logger.debug(f"Interface {interface}: {'Traffic detected' if has_traffic else 'No traffic'}")
+            return has_traffic
+            
+        except Exception as e:
+            logger.debug(f"Error checking traffic on {interface}: {e}")
+            # If there's an error, assume no traffic
+            return False
+    
+    def get_interface_list(self):
+        """Get a list of all network interfaces
+        
+        Returns:
+            list: List of tuples (interface_name, display_name)
+        """
         try:
             # Use scapy to get actual network interfaces
-            from scapy.all import get_if_list, get_if_addr, conf
+            from scapy.all import get_if_list, get_if_addr
             
             # Get list of interfaces
-            interfaces = []
+            all_interfaces = []
             
             try:
                 # Try to get interfaces from scapy
@@ -1406,13 +1549,15 @@ class DesktopApp(QMainWindow):
                         ip = get_if_addr(iface)
                         if ip:
                             # Add interface with IP address
-                            interfaces.append(f"{iface} ({ip})")
+                            interface_name = f"{iface} ({ip})"
                         else:
                             # Add interface without IP
-                            interfaces.append(iface)
+                            interface_name = iface
+                        
+                        all_interfaces.append((iface, interface_name))
                     except:
                         # If we can't get IP, just add the interface name
-                        interfaces.append(iface)
+                        all_interfaces.append((iface, iface))
                 
             except Exception as e:
                 logger.warning(f"Could not get interfaces from scapy: {e}")
@@ -1420,30 +1565,105 @@ class DesktopApp(QMainWindow):
                 # Fall back to common interface names
                 if sys.platform == 'win32':
                     # Common Windows interface names
-                    interfaces = [
+                    common_interfaces = [
                         "Ethernet", "Wi-Fi", "Local Area Connection", 
                         "Wireless Network Connection", "eth0", "wlan0"
                     ]
                     
                     # Add some numbered interfaces that might exist
                     for i in range(5):
-                        interfaces.append(f"Ethernet {i}")
-                        interfaces.append(f"Wi-Fi {i}")
+                        common_interfaces.append(f"Ethernet {i}")
+                        common_interfaces.append(f"Wi-Fi {i}")
+                    
+                    all_interfaces = [(iface, iface) for iface in common_interfaces]
                 else:
                     # Common Linux/macOS interface names
-                    interfaces = ["eth0", "eth1", "wlan0", "wlan1", "en0", "en1", "lo"]
+                    common_interfaces = ["eth0", "eth1", "wlan0", "wlan1", "en0", "en1", "lo"]
+                    all_interfaces = [(iface, iface) for iface in common_interfaces]
+            
+            return all_interfaces
+            
+        except Exception as e:
+            logger.error(f"Error getting interface list: {e}")
+            return []
+    
+    def populate_all_interfaces(self):
+        """Populate the interface combo box with all network interfaces (without traffic check)"""
+        self.interface_combo.clear()
+        
+        try:
+            # Get all interfaces
+            all_interfaces = self.get_interface_list()
             
             # Add interfaces to combo box
-            for interface in interfaces:
+            for _, display_name in all_interfaces:
+                self.interface_combo.addItem(display_name)
+            
+            # Add option to manually enter interface name
+            self.interface_combo.addItem("-- Enter manually --")
+            
+            # Add option to show only active interfaces
+            self.interface_combo.addItem("-- Show only active interfaces --")
+            
+            logger.info(f"Added {len(all_interfaces)} total interface options")
+        
+        except Exception as e:
+            logger.error(f"Error populating all interfaces: {e}")
+            self.statusBar().showMessage(f"Error: {e}")
+    
+    def populate_interfaces(self):
+        """Populate the interface combo box with network interfaces that have traffic"""
+        self.interface_combo.clear()
+        
+        try:
+            # Get all interfaces
+            all_interfaces = self.get_interface_list()
+            active_interfaces = []
+            
+            # Show a progress dialog while checking interfaces
+            progress = QProgressDialog("Checking network interfaces for traffic...", "Cancel", 0, len(all_interfaces), self)
+            progress.setWindowTitle("Interface Detection")
+            progress.setWindowModality(Qt.WindowModal)
+            progress.setMinimumDuration(500)  # Only show for operations taking > 500ms
+            progress.setValue(0)
+            
+            # Check each interface for traffic
+            for i, (iface, display_name) in enumerate(all_interfaces):
+                # Update progress
+                progress.setValue(i)
+                QApplication.processEvents()
+                
+                # Check if user canceled
+                if progress.wasCanceled():
+                    break
+                
+                # Check if this interface has traffic
+                if self.check_interface_traffic(iface):
+                    active_interfaces.append(display_name)
+                    logger.info(f"Found active interface: {display_name}")
+            
+            # Close progress dialog
+            progress.setValue(len(all_interfaces))
+            
+            # If no active interfaces were found, fall back to showing all interfaces
+            if not active_interfaces:
+                logger.info("No active interfaces found, showing all interfaces")
+                active_interfaces = [display_name for _, display_name in all_interfaces]
+            
+            # Add interfaces to combo box
+            for interface in active_interfaces:
                 self.interface_combo.addItem(interface)
             
             # Add option to manually enter interface name
             self.interface_combo.addItem("-- Enter manually --")
             
+            # Add option to show all interfaces
+            self.interface_combo.addItem("-- Show all interfaces --")
+            
             # Connect to the combo box change event
             self.interface_combo.currentTextChanged.connect(self.on_interface_changed)
             
-            logger.info(f"Added {len(interfaces)} interface options")
+            logger.info(f"Added {len(active_interfaces)} active interface options")
         
         except Exception as e:
             logger.error(f"Error populating interfaces: {e}")
@@ -1463,6 +1683,54 @@ class DesktopApp(QMainWindow):
                 self.interface_combo.setCurrentIndex(0)
             else:
                 # User canceled, revert to first item
+                self.interface_combo.setCurrentIndex(0)
+        elif text == "-- Show all interfaces --":
+            # Disconnect the signal to prevent recursion
+            self.interface_combo.currentTextChanged.disconnect(self.on_interface_changed)
+            
+            # Show a progress dialog
+            progress = QProgressDialog("Loading all interfaces...", "Cancel", 0, 100, self)
+            progress.setWindowTitle("Interface Detection")
+            progress.setWindowModality(Qt.WindowModal)
+            progress.setMinimumDuration(500)
+            progress.setValue(10)
+            QApplication.processEvents()
+            
+            # Repopulate with all interfaces (without traffic check)
+            self.populate_all_interfaces()
+            
+            # Close progress dialog
+            progress.setValue(100)
+            
+            # Reconnect the signal
+            self.interface_combo.currentTextChanged.connect(self.on_interface_changed)
+            
+            # Select the first interface
+            if self.interface_combo.count() > 0:
+                self.interface_combo.setCurrentIndex(0)
+        elif text == "-- Show only active interfaces --":
+            # Disconnect the signal to prevent recursion
+            self.interface_combo.currentTextChanged.disconnect(self.on_interface_changed)
+            
+            # Show a progress dialog
+            progress = QProgressDialog("Detecting active interfaces...", "Cancel", 0, 100, self)
+            progress.setWindowTitle("Interface Detection")
+            progress.setWindowModality(Qt.WindowModal)
+            progress.setMinimumDuration(500)
+            progress.setValue(10)
+            QApplication.processEvents()
+            
+            # Repopulate with only active interfaces
+            self.populate_interfaces()
+            
+            # Close progress dialog
+            progress.setValue(100)
+            
+            # Reconnect the signal
+            self.interface_combo.currentTextChanged.connect(self.on_interface_changed)
+            
+            # Select the first interface
+            if self.interface_combo.count() > 0:
                 self.interface_combo.setCurrentIndex(0)
         else:
             # If the interface name contains an IP address in parentheses, extract just the interface name
@@ -1488,6 +1756,12 @@ class DesktopApp(QMainWindow):
                     interface = interface_text
                 self.selected_interface = interface
             
+            # Generate a new session ID for database storage
+            if hasattr(self, 'db_manager') and self.db_manager and self.db_manager.enabled:
+                import uuid
+                self.db_manager.capture_session = str(uuid.uuid4())
+                logger.info(f"Generated new database session ID: {self.db_manager.capture_session}")
+            
             # Get filter expression
             filter_expression = self.filter_text.text().strip()
             
@@ -1503,7 +1777,12 @@ class DesktopApp(QMainWindow):
             self.stop_button.setEnabled(True)
             self.status_label.setText("Running")
             self.status_label.setStyleSheet("color: #388e3c; font-weight: bold;")  # Green for running
-            self.statusBar().showMessage("Capture started")
+            
+            # Update status message with session ID if database is enabled
+            if hasattr(self, 'db_manager') and self.db_manager and self.db_manager.enabled:
+                self.statusBar().showMessage(f"Capture started - Session ID: {self.db_manager.capture_session}")
+            else:
+                self.statusBar().showMessage("Capture started")
             
             # Clear packet display
             self.packet_table.setRowCount(0)
@@ -1607,10 +1886,16 @@ class DesktopApp(QMainWindow):
             self.statusBar().showMessage(f"Error: {e}")
     
     def queue_packet(self, metadata):
-        """Add packet to processing queue"""
+        """Add packet to processing queue and database"""
         if metadata:
             try:
+                # Add to processing queue
                 self.packet_queue.put(metadata)
+                
+                # Add to database if enabled
+                if hasattr(self, 'db_manager') and self.db_manager and self.db_manager.enabled:
+                    self.db_manager.queue_packet(metadata)
+                    
             except queue.Full:
                 logger.warning("Packet queue full, dropping packet")
     
@@ -1634,7 +1919,47 @@ class DesktopApp(QMainWindow):
         if packets_to_process == 0:
             return
         
-        # Temporarily disable UI updates for better performance
+        # Check if we're using database-backed model
+        if self.using_db_model:
+            processed_count = 0
+            for _ in range(packets_to_process):
+                try:
+                    metadata = self.packet_queue.get_nowait()
+                    
+                    # Add to captured_packets list for compatibility
+                    self.captured_packets.append(metadata)
+                    
+                    # Add frame number
+                    metadata["frame_number"] = len(self.captured_packets)
+                    
+                    # Update protocol statistics
+                    self.update_protocol_stats(metadata)
+                    
+                    self.packet_queue.task_done()
+                    processed_count += 1
+                except queue.Empty:
+                    break
+            
+            # Periodically refresh the model (every 100 packets or so)
+            if processed_count > 0 and len(self.captured_packets) % 100 == 0:
+                self.packet_model.refresh()
+            
+            # Update window title with packet count
+            if processed_count > 0:
+                total_count = self.db_manager.get_packet_count({'capture_session': self.db_manager.capture_session})
+                self.setWindowTitle(f"PyGuard Desktop - {total_count:,} packets captured")
+            
+            # Update status bar with processing info if we processed a significant number of packets
+            if processed_count > 100:
+                self.statusBar().showMessage(f"Processed {processed_count:,} packets. {queue_size - processed_count:,} remaining in queue.")
+            
+            # Schedule next processing if there are still packets in the queue
+            if not self.packet_queue.empty() and self.is_processing:
+                QTimer.singleShot(10, self.process_packet_queue)
+            
+            return
+        
+        # For traditional QTableWidget, temporarily disable UI updates for better performance
         self.packet_table.setUpdatesEnabled(False)
         
         # Check if we need to limit displayed packets
@@ -2437,16 +2762,37 @@ class DesktopApp(QMainWindow):
         except Exception as e:
             logger.error(f"Error updating status: {e}")
     
+    def update_database(self):
+        """Update database and refresh model"""
+        if hasattr(self, 'db_manager') and self.db_manager and self.db_manager.enabled:
+            # Ensure packets are committed to database
+            self.db_manager.ensure_commit()
+            
+            # Refresh model if using database-backed model
+            if self.using_db_model:
+                self.packet_model.refresh()
+    
     def update_ui(self):
         """Update UI elements periodically"""
         # Update packet count in title bar
-        packet_count = len(self.captured_packets)
-        queue_size = self.packet_queue.qsize()
-        
-        if queue_size > 0:
-            self.setWindowTitle(f"PyGuard Desktop - {packet_count} packets captured ({queue_size} in queue)")
+        if self.using_db_model and hasattr(self, 'db_manager') and self.db_manager and self.db_manager.enabled:
+            # Get count from database
+            total_count = self.db_manager.get_packet_count({'capture_session': self.db_manager.capture_session})
+            queue_size = self.packet_queue.qsize()
+            
+            if queue_size > 0:
+                self.setWindowTitle(f"PyGuard Desktop - {total_count:,} packets captured ({queue_size} in queue)")
+            else:
+                self.setWindowTitle(f"PyGuard Desktop - {total_count:,} packets captured")
         else:
-            self.setWindowTitle(f"PyGuard Desktop - {packet_count} packets captured")
+            # Use in-memory count
+            packet_count = len(self.captured_packets)
+            queue_size = self.packet_queue.qsize()
+            
+            if queue_size > 0:
+                self.setWindowTitle(f"PyGuard Desktop - {packet_count:,} packets captured ({queue_size} in queue)")
+            else:
+                self.setWindowTitle(f"PyGuard Desktop - {packet_count:,} packets captured")
         
         # Update database status if the tab is visible
         if self.secondary_tabs.currentWidget() == self.db_status_view:
@@ -3627,17 +3973,100 @@ class DesktopApp(QMainWindow):
             self.statusBar().showMessage("Display cleared")
             logger.info("Display cleared")
     
+    def load_display_config(self):
+        """Load display settings from config.yaml"""
+        try:
+            # Load configuration
+            config_path = "config.yaml"
+            try:
+                with open(config_path, 'r') as f:
+                    config = yaml.safe_load(f)
+                
+                # Get display configuration
+                display_config = config.get('display', {})
+                
+                # Update display settings if they exist in the config
+                if 'max_packets' in display_config:
+                    max_packets = display_config['max_packets']
+                    
+                    # Handle special case for unlimited (-1)
+                    if max_packets == -1:
+                        self.max_display_packets = float('inf')
+                        logger.info("Loaded max_display_packets from config: Unlimited")
+                    else:
+                        self.max_display_packets = max_packets
+                        logger.info(f"Loaded max_display_packets from config: {self.max_display_packets}")
+                
+                if 'update_interval_ms' in display_config:
+                    self.display_update_interval = display_config['update_interval_ms']
+                    logger.info(f"Loaded display_update_interval from config: {self.display_update_interval} ms")
+                
+            except Exception as e:
+                logger.warning(f"Error loading display configuration: {e}")
+                logger.warning("Using default display settings")
+                # Use default values (already set in __init__)
+        
+        except Exception as e:
+            logger.warning(f"Error loading configuration: {e}")
+            logger.warning("Using default display settings")
+            # Use default values (already set in __init__)
+    
+    def initialize_database(self):
+        """Initialize database connection"""
+        try:
+            # Load configuration
+            config_path = "config.yaml"
+            if os.path.exists(config_path):
+                with open(config_path, 'r') as f:
+                    config = yaml.safe_load(f)
+                logger.info(f"Loaded configuration from {config_path}")
+            else:
+                config = {}
+                logger.warning(f"Configuration file {config_path} not found, using defaults")
+            
+            # Check if database is enabled in config
+            db_config = config.get('database', {})
+            db_enabled = db_config.get('enabled', False)
+            
+            if db_enabled:
+                logger.info(f"Database enabled in config: {db_config.get('type', 'unknown')} at {db_config.get('host', 'localhost')}:{db_config.get('port', 5432)}")
+            else:
+                logger.info("Database disabled in config")
+            
+            # Create database manager
+            self.db_manager = DatabaseManager(config)
+            
+            # Log status
+            if self.db_manager.enabled:
+                if self.db_manager.connection:
+                    logger.info(f"Database connection established successfully. Session ID: {self.db_manager.capture_session}")
+                    # Set flag to use database-backed model
+                    self.using_db_model = True
+                else:
+                    logger.error("Database enabled but connection failed")
+                    self.using_db_model = False
+            else:
+                logger.info("Database integration disabled")
+                self.using_db_model = False
+                
+        except Exception as e:
+            logger.error(f"Error initializing database: {e}")
+            self.db_manager = None
+            self.using_db_model = False
+    
     def set_packet_limit(self, limit_text):
-        """Set the maximum number of packets to display"""
+        """Set the maximum number of packets to display and save to config"""
         try:
             if limit_text == "Unlimited":
                 self.max_display_packets = float('inf')
                 self.statusBar().showMessage(f"Packet display limit set to unlimited. All packets will be kept.")
+                limit_value = -1  # Use -1 to represent unlimited in the config
             else:
                 # Extract the number part and parse it (remove commas)
                 limit_number = limit_text.split(" ")[0]
                 limit = int(limit_number.replace(",", ""))
                 self.max_display_packets = limit
+                limit_value = limit
                 
                 # Show a more informative message
                 if self.max_display_packets < len(self.captured_packets):
@@ -3652,9 +4081,50 @@ class DesktopApp(QMainWindow):
                     )
             
             logger.info(f"Packet display limit set to {limit_text}")
+            
+            # Save the setting to the config file
+            self.save_display_config(limit_value)
+            
         except Exception as e:
             logger.error(f"Error setting packet limit: {e}")
             self.max_display_packets = 100000  # Default
+    
+    def save_display_config(self, max_packets_value):
+        """Save display settings to config.yaml"""
+        try:
+            import yaml
+            
+            # Load current configuration
+            config_path = "config.yaml"
+            try:
+                with open(config_path, 'r') as f:
+                    config = yaml.safe_load(f)
+                
+                # Create display section if it doesn't exist
+                if 'display' not in config:
+                    config['display'] = {}
+                
+                # Update max_packets value
+                if max_packets_value == -1:  # Unlimited
+                    config['display']['max_packets'] = -1
+                else:
+                    config['display']['max_packets'] = max_packets_value
+                
+                # Save update_interval_ms if it's not already in the config
+                if 'update_interval_ms' not in config['display']:
+                    config['display']['update_interval_ms'] = self.display_update_interval
+                
+                # Save the updated configuration
+                with open(config_path, 'w') as f:
+                    yaml.dump(config, f, default_flow_style=False)
+                
+                logger.info(f"Saved display configuration to {config_path}")
+                
+            except Exception as e:
+                logger.error(f"Error saving display configuration: {e}")
+        
+        except ImportError:
+            logger.warning("PyYAML not available, cannot save display settings")
     
     def handle_error(self, error_message):
         """Handle errors from the capture thread"""
@@ -3979,6 +4449,11 @@ class DesktopApp(QMainWindow):
                     if save_reply == QMessageBox.Yes:
                         self.save_packets()
                 
+                # Close database connection
+                if hasattr(self, 'db_manager') and self.db_manager:
+                    logger.info("Closing database connection on application exit")
+                    self.db_manager.close()
+                
                 event.accept()
             else:
                 event.ignore()
@@ -3993,6 +4468,11 @@ class DesktopApp(QMainWindow):
                 
                 if save_reply == QMessageBox.Yes:
                     self.save_packets()
+            
+            # Close database connection
+            if hasattr(self, 'db_manager') and self.db_manager:
+                logger.info("Closing database connection on application exit")
+                self.db_manager.close()
             
             event.accept()
 

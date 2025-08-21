@@ -28,6 +28,9 @@ capture:
   buffer_size_mb: 100
   batch_size: 1000
   processing_threads: 4
+display:
+  max_packets: 100000  # Maximum number of packets to display in the UI
+  update_interval_ms: 100  # UI update interval in milliseconds
 system:
   memory_limit_percent: 80
   cpu_limit_percent: 90
