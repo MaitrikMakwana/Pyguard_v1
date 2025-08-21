@@ -5,7 +5,8 @@ Launcher script for PyGuard Desktop Application
 
 import sys
 import logging
-from desktop_app import main
+# Fix the import - import directly from the current file
+import desktop_app
 
 if __name__ == "__main__":
     # Setup basic logging
@@ -22,4 +23,4 @@ if __name__ == "__main__":
     logger = logging.getLogger('pyguard')
     
     # Run the desktop application
-    sys.exit(main())
+    sys.exit(desktop_app.main())

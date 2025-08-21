@@ -4664,3 +4664,7 @@ def main():
     
     # Execute the application
     return app.exec_()
+
+if __name__ == "__main__":
+    # Run the main function when this file is executed directly
+    sys.exit(main())
