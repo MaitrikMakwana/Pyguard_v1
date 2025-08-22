@@ -14,6 +14,32 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
+def clean_unicode_for_csv(text):
+    """Clean Unicode characters that cause CSV encoding issues on Windows"""
+    if not isinstance(text, str):
+        return text
+    
+    # Replace problematic Unicode characters with ASCII equivalents
+    replacements = {
+        '\u2192': '->',   # Right arrow
+        '\u2190': '<-',   # Left arrow
+        '\u2194': '<->',  # Left-right arrow
+        '\u21d2': '=>',   # Double right arrow
+        '\u21d0': '<=',   # Double left arrow
+        '\u2022': '*',    # Bullet point
+        '\u2013': '-',    # En dash
+        '\u2014': '--',   # Em dash
+        '\u201c': '"',    # Left double quote
+        '\u201d': '"',    # Right double quote
+        '\u2018': "'",    # Left single quote
+        '\u2019': "'",    # Right single quote
+    }
+    
+    for unicode_char, replacement in replacements.items():
+        text = text.replace(unicode_char, replacement)
+    
+    return text
+
 class CSVStorage:
     """Store packet metadata in CSV files"""
     
@@ -79,7 +105,8 @@ class CSVStorage:
                             if field in ['dns', 'http', 'tcp_flags'] and metadata[field]:
                                 row[field] = json.dumps(metadata[field])
                             else:
-                                row[field] = metadata[field]
+                                # Handle Unicode characters in string fields
+                                row[field] = clean_unicode_for_csv(metadata[field])
                         else:
                             row[field] = None
                     
@@ -118,8 +145,8 @@ class CSVStorage:
         filename = f"packets_{timestamp}.csv"
         self.current_file = self.directory / filename
         
-        # Open file and create CSV writer
-        self.csv_file = open(self.current_file, 'w', newline='')
+        # Open file and create CSV writer with UTF-8 encoding
+        self.csv_file = open(self.current_file, 'w', newline='', encoding='utf-8')
         self.writer = csv.DictWriter(self.csv_file, fieldnames=self.csv_fields)
         self.writer.writeheader()
         

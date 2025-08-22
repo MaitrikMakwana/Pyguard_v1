@@ -33,8 +33,13 @@ def load_config():
 def process_packet(packet, db_conn, cursor):
     try:
         # Extract basic packet information
-        timestamp = datetime.now()
-        timestamp_epoch = time.time()
+        # Use packet timestamp if available, otherwise use current time
+        if hasattr(packet, 'time') and packet.time:
+            timestamp_epoch = packet.time
+            timestamp = datetime.fromtimestamp(packet.time)
+        else:
+            timestamp = datetime.now()
+            timestamp_epoch = time.time()
         
         # Initialize packet data
         packet_data = {
@@ -42,6 +47,7 @@ def process_packet(packet, db_conn, cursor):
             'timestamp_epoch': timestamp_epoch,
             'capture_length': len(packet),
             'packet_length': len(packet),
+            'packet_size': len(packet),  # Added for compatibility
             'protocol_name': 'UNKNOWN'
         }
         
@@ -71,8 +77,21 @@ def process_packet(packet, db_conn, cursor):
                 packet_data['dst_port'] = packet[TCP].dport
                 packet_data['window_size'] = packet[TCP].window
                 packet_data['tcp_flags_raw'] = packet[TCP].flags.value
+                packet_data['header_length'] = packet[TCP].dataofs * 4  # TCP header length
+                packet_data['tcp_seq'] = packet[TCP].seq
+                packet_data['tcp_ack'] = packet[TCP].ack
                 
-                # Extract TCP flags
+                # Extract individual TCP flags (for ML compatibility)
+                packet_data['fin_flag'] = int(packet[TCP].flags.F)
+                packet_data['syn_flag'] = int(packet[TCP].flags.S)
+                packet_data['rst_flag'] = int(packet[TCP].flags.R)
+                packet_data['psh_flag'] = int(packet[TCP].flags.P)
+                packet_data['ack_flag'] = int(packet[TCP].flags.A)
+                packet_data['urg_flag'] = int(packet[TCP].flags.U)
+                packet_data['ece_flag'] = int(packet[TCP].flags.E)
+                packet_data['cwr_flag'] = int(packet[TCP].flags.C)
+                
+                # Extract TCP flags as string list (for backward compatibility)
                 flags = []
                 if packet[TCP].flags.S:
                     flags.append('SYN')
@@ -86,6 +105,10 @@ def process_packet(packet, db_conn, cursor):
                     flags.append('PSH')
                 if packet[TCP].flags.U:
                     flags.append('URG')
+                if packet[TCP].flags.E:
+                    flags.append('ECE')
+                if packet[TCP].flags.C:
+                    flags.append('CWR')
                 
                 packet_data['tcp_flags'] = json.dumps(flags)
                 
@@ -133,6 +156,7 @@ def process_packet(packet, db_conn, cursor):
                 packet_data['protocol_name'] = 'UDP'
                 packet_data['src_port'] = packet[UDP].sport
                 packet_data['dst_port'] = packet[UDP].dport
+                packet_data['header_length'] = 8  # UDP header is always 8 bytes
                 
                 # Try to extract DNS data
                 if DNS in packet:
@@ -197,7 +221,26 @@ def process_packet(packet, db_conn, cursor):
         
         # Calculate payload size
         if 'total_length' in packet_data and 'header_length' in packet_data:
-            packet_data['payload_size'] = packet_data['total_length'] - packet_data['header_length']
+            # IP header length + transport header length
+            ip_header_len = packet_data.get('header_length', 20)  # Default IP header is 20 bytes
+            transport_header_len = 0
+            
+            if TCP in packet:
+                transport_header_len = packet[TCP].dataofs * 4
+            elif UDP in packet:
+                transport_header_len = 8
+            
+            packet_data['payload_size'] = packet_data['total_length'] - ip_header_len - transport_header_len
+            
+            # Ensure payload size is not negative
+            if packet_data['payload_size'] < 0:
+                packet_data['payload_size'] = 0
+        else:
+            # Fallback: calculate from Raw layer if available
+            if Raw in packet:
+                packet_data['payload_size'] = len(packet[Raw].load)
+            else:
+                packet_data['payload_size'] = 0
         
         # Store packet in database
         columns = []
@@ -297,5 +340,97 @@ def main():
         logger.error(f"Error: {e}")
         return 1
 
+def export_to_csv(db_config, output_file='captured_packets.csv'):
+    """
+    Export captured packets from database to CSV format suitable for ML analysis
+    """
+    try:
+        import pandas as pd
+        
+        # Connect to database
+        conn = psycopg2.connect(
+            host=db_config['host'],
+            port=db_config['port'],
+            dbname=db_config['name'],
+            user=db_config['user'],
+            password=db_config['password']
+        )
+        
+        # Query to get all packet data
+        query = """
+        SELECT 
+            timestamp,
+            timestamp_epoch,
+            src_ip,
+            dst_ip,
+            protocol,
+            total_length,
+            ttl,
+            src_port,
+            dst_port,
+            packet_size,
+            header_length,
+            fin_flag,
+            syn_flag,
+            rst_flag,
+            psh_flag,
+            ack_flag,
+            urg_flag,
+            ece_flag,
+            cwr_flag,
+            window_size,
+            payload_size,
+            protocol_name,
+            direction,
+            tcp_flags,
+            tcp_seq,
+            tcp_ack,
+            http,
+            dns,
+            icmp_type,
+            icmp_code,
+            arp_op,
+            mac_src,
+            mac_dst
+        FROM packets 
+        ORDER BY timestamp_epoch
+        """
+        
+        # Read data into DataFrame
+        df = pd.read_sql_query(query, conn)
+        
+        # Export to CSV
+        df.to_csv(output_file, index=False)
+        logger.info(f"Exported {len(df)} packets to {output_file}")
+        
+        conn.close()
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error exporting to CSV: {e}")
+        return False
+
 if __name__ == "__main__":
-    sys.exit(main())
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='PyGuard Network Traffic Capture')
+    parser.add_argument('--export-csv', action='store_true', help='Export captured data to CSV')
+    parser.add_argument('--output-file', default='captured_packets.csv', help='Output CSV file name')
+    
+    args = parser.parse_args()
+    
+    if args.export_csv:
+        # Load configuration and export to CSV
+        config = load_config()
+        if config:
+            db_config = config.get('database', {})
+            if export_to_csv(db_config, args.output_file):
+                sys.exit(0)
+            else:
+                sys.exit(1)
+        else:
+            logger.error("Failed to load configuration")
+            sys.exit(1)
+    else:
+        # Run normal packet capture
+        sys.exit(main())

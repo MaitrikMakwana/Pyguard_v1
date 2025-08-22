@@ -34,6 +34,32 @@ logging.basicConfig(
     ]
 )
 
+def clean_unicode_for_csv(text):
+    """Clean Unicode characters that cause CSV encoding issues on Windows"""
+    if not isinstance(text, str):
+        return str(text) if text is not None else ""
+    
+    # Replace problematic Unicode characters with ASCII equivalents
+    replacements = {
+        '\u2192': '->',   # Right arrow
+        '\u2190': '<-',   # Left arrow
+        '\u2194': '<->',  # Left-right arrow
+        '\u21d2': '=>',   # Double right arrow
+        '\u21d0': '<=',   # Double left arrow
+        '\u2022': '*',    # Bullet point
+        '\u2013': '-',    # En dash
+        '\u2014': '--',   # Em dash
+        '\u201c': '"',    # Left double quote
+        '\u201d': '"',    # Right double quote
+        '\u2018': "'",    # Left single quote
+        '\u2019': "'",    # Right single quote
+    }
+    
+    for unicode_char, replacement in replacements.items():
+        text = text.replace(unicode_char, replacement)
+    
+    return text
+
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QComboBox, QTextEdit, QTabWidget, QSplitter,
@@ -106,14 +132,21 @@ class PacketCapture(QThread):
                 # Use scapy's sniff function for packet capture
                 logger.info(f"Starting capture on interface {self.interface} with filter: {self.filter_expression}")
                 
-                # Start sniffing packets
-                sniff(
-                    iface=self.interface,
-                    filter=self.filter_expression if self.filter_expression else None,
-                    prn=self._packet_callback,
-                    store=0,  # Don't store packets in memory
-                    stop_filter=lambda x: not self.running  # Stop when self.running is False
-                )
+                # Start sniffing packets with timeout-based stopping
+                while self.running:
+                    try:
+                        sniff(
+                            iface=self.interface,
+                            filter=self.filter_expression if self.filter_expression else None,
+                            prn=self._packet_callback,
+                            store=0,  # Don't store packets in memory
+                            timeout=1,  # Timeout after 1 second to check running status
+                            count=100  # Process up to 100 packets before checking running status
+                        )
+                    except Exception as sniff_error:
+                        if self.running:  # Only log if we're still supposed to be running
+                            logger.error(f"Error in sniff loop: {sniff_error}")
+                        break
                 
             except Exception as e:
                 logger.error(f"Error starting packet capture: {e}")
@@ -153,7 +186,18 @@ class PacketCapture(QThread):
     
     def stop(self):
         """Stop the capture thread"""
+        logger.info("Stopping packet capture thread...")
         self.running = False
+        
+        # Give the thread a moment to stop gracefully
+        if self.isRunning():
+            self.wait(2000)  # Wait up to 2 seconds
+            
+        # If thread is still running, terminate it forcefully
+        if self.isRunning():
+            logger.warning("Thread did not stop gracefully, terminating...")
+            self.terminate()
+            self.wait(1000)  # Wait for termination
     
     def _packet_callback(self, packet):
         """Process a captured packet from scapy's sniff function"""
@@ -617,9 +661,15 @@ class DesktopApp(QMainWindow):
         self.packet_queue = queue.Queue()
         self.processing_thread = None
         self.is_processing = False
+        
+        # Default display settings
         self.max_display_packets = 100000  # Maximum number of packets to display
         self.packet_buffer_size = 1000  # Process packets in batches
         self.display_update_interval = 100  # ms
+        
+        # Try to load display settings from config.yaml
+        self.load_display_config()
+        
         self.selected_interface = None  # Store the selected interface name
         
         # Protocol statistics
@@ -715,6 +765,11 @@ class DesktopApp(QMainWindow):
         file_label.setStyleSheet("font-weight: bold;")
         self.toolbar.addWidget(file_label)
         
+        open_action = QAction("📂 Open", self)
+        open_action.setToolTip("Open saved packet files (PCAP, CSV, JSON)")
+        open_action.triggered.connect(self.open_file)
+        self.toolbar.addAction(open_action)
+        
         save_action = QAction("💾 Save", self)
         save_action.setToolTip("Save captured packets")
         save_action.triggered.connect(self.save_packets)
@@ -745,7 +800,22 @@ class DesktopApp(QMainWindow):
             "1,000,000 packets", 
             "Unlimited"
         ])
-        self.packet_limit_combo.setCurrentIndex(2)  # Default to 100,000
+        
+        # Set the combo box to match the config value
+        if self.max_display_packets == float('inf'):
+            self.packet_limit_combo.setCurrentText("Unlimited")
+        else:
+            # Find the closest match to the configured value
+            if self.max_display_packets <= 1000:
+                self.packet_limit_combo.setCurrentIndex(0)  # 1,000
+            elif self.max_display_packets <= 10000:
+                self.packet_limit_combo.setCurrentIndex(1)  # 10,000
+            elif self.max_display_packets <= 100000:
+                self.packet_limit_combo.setCurrentIndex(2)  # 100,000
+            elif self.max_display_packets <= 1000000:
+                self.packet_limit_combo.setCurrentIndex(3)  # 1,000,000
+            else:
+                self.packet_limit_combo.setCurrentText("Unlimited")
         self.packet_limit_combo.currentTextChanged.connect(self.set_packet_limit)
         self.packet_limit_combo.setToolTip("Set maximum number of packets to keep in the display.\nWhen this limit is reached, older packets will be removed.")
         self.packet_limit_combo.setFixedWidth(150)
@@ -1384,16 +1454,54 @@ class DesktopApp(QMainWindow):
         # Log startup message
         logger.info("PyGuard Desktop Application started - Wireshark-like UI with heavy traffic support")
     
-    def populate_interfaces(self):
-        """Populate the interface combo box with network interfaces"""
-        self.interface_combo.clear()
+    def check_interface_traffic(self, interface, timeout=1):
+        """Check if an interface has active traffic
         
+        Args:
+            interface: Interface name to check
+            timeout: Time in seconds to sniff for traffic
+            
+        Returns:
+            bool: True if traffic was detected, False otherwise
+        """
+        try:
+            from scapy.all import sniff
+            
+            # Create a packet counter
+            packet_count = [0]
+            
+            # Define a callback that just counts packets
+            def packet_callback(pkt):
+                packet_count[0] += 1
+                # Stop after first packet
+                return True
+            
+            # Try to sniff for a short time to see if there's any traffic
+            logger.debug(f"Checking for traffic on {interface}...")
+            sniff(iface=interface, prn=packet_callback, timeout=timeout, store=0, count=1)
+            
+            # Return True if we captured any packets
+            has_traffic = packet_count[0] > 0
+            logger.debug(f"Interface {interface}: {'Traffic detected' if has_traffic else 'No traffic'}")
+            return has_traffic
+            
+        except Exception as e:
+            logger.debug(f"Error checking traffic on {interface}: {e}")
+            # If there's an error, assume no traffic
+            return False
+    
+    def get_interface_list(self):
+        """Get a list of all network interfaces
+        
+        Returns:
+            list: List of tuples (interface_name, display_name)
+        """
         try:
             # Use scapy to get actual network interfaces
-            from scapy.all import get_if_list, get_if_addr, conf
+            from scapy.all import get_if_list, get_if_addr
             
             # Get list of interfaces
-            interfaces = []
+            all_interfaces = []
             
             try:
                 # Try to get interfaces from scapy
@@ -1406,13 +1514,15 @@ class DesktopApp(QMainWindow):
                         ip = get_if_addr(iface)
                         if ip:
                             # Add interface with IP address
-                            interfaces.append(f"{iface} ({ip})")
+                            interface_name = f"{iface} ({ip})"
                         else:
                             # Add interface without IP
-                            interfaces.append(iface)
+                            interface_name = iface
+                        
+                        all_interfaces.append((iface, interface_name))
                     except:
                         # If we can't get IP, just add the interface name
-                        interfaces.append(iface)
+                        all_interfaces.append((iface, iface))
                 
             except Exception as e:
                 logger.warning(f"Could not get interfaces from scapy: {e}")
@@ -1420,30 +1530,105 @@ class DesktopApp(QMainWindow):
                 # Fall back to common interface names
                 if sys.platform == 'win32':
                     # Common Windows interface names
-                    interfaces = [
+                    common_interfaces = [
                         "Ethernet", "Wi-Fi", "Local Area Connection", 
                         "Wireless Network Connection", "eth0", "wlan0"
                     ]
                     
                     # Add some numbered interfaces that might exist
                     for i in range(5):
-                        interfaces.append(f"Ethernet {i}")
-                        interfaces.append(f"Wi-Fi {i}")
+                        common_interfaces.append(f"Ethernet {i}")
+                        common_interfaces.append(f"Wi-Fi {i}")
+                    
+                    all_interfaces = [(iface, iface) for iface in common_interfaces]
                 else:
                     # Common Linux/macOS interface names
-                    interfaces = ["eth0", "eth1", "wlan0", "wlan1", "en0", "en1", "lo"]
+                    common_interfaces = ["eth0", "eth1", "wlan0", "wlan1", "en0", "en1", "lo"]
+                    all_interfaces = [(iface, iface) for iface in common_interfaces]
+            
+            return all_interfaces
+            
+        except Exception as e:
+            logger.error(f"Error getting interface list: {e}")
+            return []
+    
+    def populate_all_interfaces(self):
+        """Populate the interface combo box with all network interfaces (without traffic check)"""
+        self.interface_combo.clear()
+        
+        try:
+            # Get all interfaces
+            all_interfaces = self.get_interface_list()
             
             # Add interfaces to combo box
-            for interface in interfaces:
+            for _, display_name in all_interfaces:
+                self.interface_combo.addItem(display_name)
+            
+            # Add option to manually enter interface name
+            self.interface_combo.addItem("-- Enter manually --")
+            
+            # Add option to show only active interfaces
+            self.interface_combo.addItem("-- Show only active interfaces --")
+            
+            logger.info(f"Added {len(all_interfaces)} total interface options")
+        
+        except Exception as e:
+            logger.error(f"Error populating all interfaces: {e}")
+            self.statusBar().showMessage(f"Error: {e}")
+    
+    def populate_interfaces(self):
+        """Populate the interface combo box with network interfaces that have traffic"""
+        self.interface_combo.clear()
+        
+        try:
+            # Get all interfaces
+            all_interfaces = self.get_interface_list()
+            active_interfaces = []
+            
+            # Show a progress dialog while checking interfaces
+            progress = QProgressDialog("Checking network interfaces for traffic...", "Cancel", 0, len(all_interfaces), self)
+            progress.setWindowTitle("Interface Detection")
+            progress.setWindowModality(Qt.WindowModal)
+            progress.setMinimumDuration(500)  # Only show for operations taking > 500ms
+            progress.setValue(0)
+            
+            # Check each interface for traffic
+            for i, (iface, display_name) in enumerate(all_interfaces):
+                # Update progress
+                progress.setValue(i)
+                QApplication.processEvents()
+                
+                # Check for user cancel
+                if progress.wasCanceled():
+                    break
+                
+                # Check if this interface has traffic
+                if self.check_interface_traffic(iface):
+                    active_interfaces.append(display_name)
+                    logger.info(f"Found active interface: {display_name}")
+            
+            # Close progress dialog
+            progress.setValue(len(all_interfaces))
+            
+            # If no active interfaces were found, fall back to showing all interfaces
+            if not active_interfaces:
+                logger.info("No active interfaces found, showing all interfaces")
+                active_interfaces = [display_name for _, display_name in all_interfaces]
+            
+            # Add interfaces to combo box
+            for interface in active_interfaces:
                 self.interface_combo.addItem(interface)
             
             # Add option to manually enter interface name
             self.interface_combo.addItem("-- Enter manually --")
             
+            # Add option to show all interfaces
+            self.interface_combo.addItem("-- Show all interfaces --")
+            
             # Connect to the combo box change event
             self.interface_combo.currentTextChanged.connect(self.on_interface_changed)
             
-            logger.info(f"Added {len(interfaces)} interface options")
+            logger.info(f"Added {len(active_interfaces)} active interface options")
         
         except Exception as e:
             logger.error(f"Error populating interfaces: {e}")
@@ -1463,6 +1648,54 @@ class DesktopApp(QMainWindow):
                 self.interface_combo.setCurrentIndex(0)
             else:
                 # User canceled, revert to first item
+                self.interface_combo.setCurrentIndex(0)
+        elif text == "-- Show all interfaces --":
+            # Disconnect the signal to prevent recursion
+            self.interface_combo.currentTextChanged.disconnect(self.on_interface_changed)
+            
+            # Show a progress dialog
+            progress = QProgressDialog("Loading all interfaces...", "Cancel", 0, 100, self)
+            progress.setWindowTitle("Interface Detection")
+            progress.setWindowModality(Qt.WindowModal)
+            progress.setMinimumDuration(500)
+            progress.setValue(10)
+            QApplication.processEvents()
+            
+            # Repopulate with all interfaces (without traffic check)
+            self.populate_all_interfaces()
+            
+            # Close progress dialog
+            progress.setValue(100)
+            
+            # Reconnect the signal
+            self.interface_combo.currentTextChanged.connect(self.on_interface_changed)
+            
+            # Select the first interface
+            if self.interface_combo.count() > 0:
+                self.interface_combo.setCurrentIndex(0)
+        elif text == "-- Show only active interfaces --":
+            # Disconnect the signal to prevent recursion
+            self.interface_combo.currentTextChanged.disconnect(self.on_interface_changed)
+            
+            # Show a progress dialog
+            progress = QProgressDialog("Detecting active interfaces...", "Cancel", 0, 100, self)
+            progress.setWindowTitle("Interface Detection")
+            progress.setWindowModality(Qt.WindowModal)
+            progress.setMinimumDuration(500)
+            progress.setValue(10)
+            QApplication.processEvents()
+            
+            # Repopulate with only active interfaces
+            self.populate_interfaces()
+            
+            # Close progress dialog
+            progress.setValue(100)
+            
+            # Reconnect the signal
+            self.interface_combo.currentTextChanged.connect(self.on_interface_changed)
+            
+            # Select the first interface
+            if self.interface_combo.count() > 0:
                 self.interface_combo.setCurrentIndex(0)
         else:
             # If the interface name contains an IP address in parentheses, extract just the interface name
@@ -1555,9 +1788,25 @@ class DesktopApp(QMainWindow):
         """Stop packet capture"""
         try:
             if self.capture_thread and self.capture_thread.isRunning():
+                logger.info("Stopping packet capture...")
+                
+                # Update UI to show stopping state
+                self.start_button.setEnabled(False)
+                self.stop_button.setEnabled(False)
+                self.status_label.setText("Stopping...")
+                self.status_label.setStyleSheet("color: #ff9800; font-weight: bold;")  # Orange for stopping
+                self.statusBar().showMessage("Stopping capture...")
+                
+                # Stop the capture thread
                 self.capture_thread.stop()
                 
-                # Update UI
+                # Wait for thread to finish (with timeout)
+                if not self.capture_thread.wait(3000):  # Wait up to 3 seconds
+                    logger.warning("Thread did not stop gracefully, forcing termination")
+                    self.capture_thread.terminate()
+                    self.capture_thread.wait(1000)  # Wait for termination
+                
+                # Update UI to stopped state
                 self.start_button.setEnabled(True)
                 self.stop_button.setEnabled(False)
                 self.status_label.setText("Stopped")
@@ -1574,11 +1823,25 @@ class DesktopApp(QMainWindow):
                 # Hide progress bar
                 self.progress_bar.setVisible(False)
                 
-                logger.info("Capture stopped")
+                logger.info("Capture stopped successfully")
+            else:
+                logger.info("No capture thread running")
+                # Update UI to stopped state anyway
+                self.start_button.setEnabled(True)
+                self.stop_button.setEnabled(False)
+                self.status_label.setText("Stopped")
+                self.status_label.setStyleSheet("color: #d32f2f; font-weight: bold;")
+                self.statusBar().showMessage("No capture running")
         
         except Exception as e:
             logger.error(f"Error stopping capture: {e}")
-            self.statusBar().showMessage(f"Error: {e}")
+            self.statusBar().showMessage(f"Error stopping capture: {e}")
+            
+            # Reset UI state even if there was an error
+            self.start_button.setEnabled(True)
+            self.stop_button.setEnabled(False)
+            self.status_label.setText("Error")
+            self.status_label.setStyleSheet("color: #d32f2f; font-weight: bold;")
     
     def restart_capture(self):
         """Restart packet capture"""
@@ -1709,7 +1972,9 @@ class DesktopApp(QMainWindow):
         for _ in range(packets_to_process):
             try:
                 metadata = self.packet_queue.get_nowait()
-                self.handle_packet(metadata)
+                # Packets coming from the live capture queue should be added to the
+                # internal list since they are new arrivals.
+                self.handle_packet(metadata, add_to_list=True)
                 self.packet_queue.task_done()
                 processed_count += 1
             except queue.Empty:
@@ -1873,11 +2138,19 @@ class DesktopApp(QMainWindow):
         except Exception as e:
             logger.error(f"Error updating advanced filter table: {e}")
     
-    def handle_packet(self, metadata):
-        """Handle a captured packet"""
+    def handle_packet(self, metadata, add_to_list=False):
+        """Handle a packet for display.
+
+        Args:
+            metadata: Packet dict.
+            add_to_list: When True, append to `self.captured_packets`. Use True for
+                         new live packets. For redraws (e.g., after file load),
+                         keep False to avoid duplicating entries.
+        """
         if metadata:
-            # Add packet to list
-            self.captured_packets.append(metadata)
+            # Add packet to list only when explicitly requested
+            if add_to_list:
+                self.captured_packets.append(metadata)
             
             # Add frame number
             metadata["frame_number"] = len(self.captured_packets)
@@ -1945,7 +2218,17 @@ class DesktopApp(QMainWindow):
             # If this is the first packet, select it
             if row == 0:
                 self.packet_table.selectRow(0)
-    
+
+    def update_packet_display(self):
+        """Refresh the packet table from `self.captured_packets` without mutating it."""
+        self.packet_table.setRowCount(0)
+        for packet in self.captured_packets:
+            # Redraw rows only; do not append to the underlying list
+            self.handle_packet(packet, add_to_list=False)
+        # Optionally select the first packet
+        if self.packet_table.rowCount() > 0:
+            self.packet_table.selectRow(0)
+
     def on_packet_selected(self):
         """Handle packet selection in the table"""
         selected_rows = self.packet_table.selectedIndexes()
@@ -2404,8 +2687,7 @@ class DesktopApp(QMainWindow):
             self.tcp_label.setText(f"TCP: {self.protocol_stats['tcp_packets']:,}")
             self.udp_label.setText(f"UDP: {self.protocol_stats['udp_packets']:,}")
             self.icmp_label.setText(f"ICMP: {self.protocol_stats['icmp_packets']:,}")
-            other_count = self.protocol_stats['other_packets']
-            self.other_label.setText(f"Other: {other_count:,}")
+            self.other_label.setText(f"Other: {self.protocol_stats['other_packets']:,}")
             
             # Update status bar
             if stats.get("start_time"):
@@ -3353,7 +3635,6 @@ class DesktopApp(QMainWindow):
         <p>Use parentheses to group expressions and control precedence:</p>
         
         <pre>
-        (tcp or udp) and port 80
         host 192.168.1.1 and (tcp or icmp)
         </pre>
         
@@ -3364,6 +3645,7 @@ class DesktopApp(QMainWindow):
         proto[offset:size]
         </pre>
         
+        <p>Where:</p>
         <p>Where:</p>
         <ul>
             <li><code>proto</code> is the protocol (ip, tcp, udp, etc.)</li>
@@ -3552,8 +3834,47 @@ class DesktopApp(QMainWindow):
             logger.error(f"Error displaying filter help dialog: {e}")
             QMessageBox.warning(self, "Error", f"Could not display filter help: {e}")
     
-    def update_protocol_stats(self, packet):
-        """Update protocol statistics based on packet"""
+    def update_protocol_stats(self, packet=None):
+        """Update protocol statistics.
+        - If 'packet' is provided: increment counts for that packet.
+        - If 'packet' is None: recompute counts from all captured packets (used after loading files).
+        """
+        # Recompute from scratch when no packet is provided
+        if packet is None:
+            # Reset counters
+            for key in self.protocol_stats:
+                self.protocol_stats[key] = 0
+            
+            # Rebuild stats from currently loaded packets
+            for p in getattr(self, 'captured_packets', []):
+                proto = p.get("protocol", "")
+                if not proto and "layers" in p and p["layers"]:
+                    proto = p["layers"][-1]
+                
+                if proto == "TCP":
+                    self.protocol_stats["tcp_packets"] += 1
+                elif proto == "UDP":
+                    self.protocol_stats["udp_packets"] += 1
+                elif proto == "ICMP":
+                    self.protocol_stats["icmp_packets"] += 1
+                elif proto == "ARP":
+                    self.protocol_stats["arp_packets"] += 1
+                else:
+                    self.protocol_stats["other_packets"] += 1
+                
+                if "DNS" in p.get("layers", []):
+                    self.protocol_stats["dns_packets"] += 1
+                if "HTTP" in p.get("layers", []):
+                    self.protocol_stats["http_packets"] += 1
+            
+            # Update status bar labels
+            self.tcp_label.setText(f"TCP: {self.protocol_stats['tcp_packets']:,}")
+            self.udp_label.setText(f"UDP: {self.protocol_stats['udp_packets']:,}")
+            self.icmp_label.setText(f"ICMP: {self.protocol_stats['icmp_packets']:,}")
+            self.other_label.setText(f"Other: {self.protocol_stats['other_packets']:,}")
+            return
+        
+        # Incremental update for a single packet
         # Get protocol
         protocol = packet.get("protocol", "")
         if not protocol and "layers" in packet and packet["layers"]:
@@ -3627,17 +3948,58 @@ class DesktopApp(QMainWindow):
             self.statusBar().showMessage("Display cleared")
             logger.info("Display cleared")
     
+    def load_display_config(self):
+        """Load display settings from config.yaml"""
+        try:
+            import yaml
+            
+            # Load configuration
+            config_path = "config.yaml"
+            try:
+                with open(config_path, 'r') as f:
+                    config = yaml.safe_load(f)
+                
+                # Get display configuration
+                display_config = config.get('display', {})
+                
+                # Update display settings if they exist in the config
+                if 'max_packets' in display_config:
+                    max_packets = display_config['max_packets']
+                    
+                    # Handle special case for unlimited (-1)
+                    if max_packets == -1:
+                        self.max_display_packets = float('inf')
+                        logger.info("Loaded max_display_packets from config: Unlimited")
+                    else:
+                        self.max_display_packets = max_packets
+                        logger.info(f"Loaded max_display_packets from config: {self.max_display_packets}")
+                
+                if 'update_interval_ms' in display_config:
+                    self.display_update_interval = display_config['update_interval_ms']
+                    logger.info(f"Loaded display_update_interval from config: {self.display_update_interval} ms")
+                
+            except Exception as e:
+                logger.warning(f"Error loading display configuration: {e}")
+                logger.warning("Using default display settings")
+                # Use default values (already set in __init__)
+        
+        except ImportError:
+            logger.warning("PyYAML not available, using default display settings")
+            # Use default values (already set in __init__)
+    
     def set_packet_limit(self, limit_text):
-        """Set the maximum number of packets to display"""
+        """Set the maximum number of packets to display and save to config"""
         try:
             if limit_text == "Unlimited":
                 self.max_display_packets = float('inf')
                 self.statusBar().showMessage(f"Packet display limit set to unlimited. All packets will be kept.")
+                limit_value = -1  # Use -1 to represent unlimited in the config
             else:
                 # Extract the number part and parse it (remove commas)
                 limit_number = limit_text.split(" ")[0]
                 limit = int(limit_number.replace(",", ""))
                 self.max_display_packets = limit
+                limit_value = limit
                 
                 # Show a more informative message
                 if self.max_display_packets < len(self.captured_packets):
@@ -3652,9 +4014,50 @@ class DesktopApp(QMainWindow):
                     )
             
             logger.info(f"Packet display limit set to {limit_text}")
+            
+            # Save the setting to the config file
+            self.save_display_config(limit_value)
+            
         except Exception as e:
             logger.error(f"Error setting packet limit: {e}")
             self.max_display_packets = 100000  # Default
+    
+    def save_display_config(self, max_packets_value):
+        """Save display settings to config.yaml"""
+        try:
+            import yaml
+            
+            # Load current configuration
+            config_path = "config.yaml"
+            try:
+                with open(config_path, 'r') as f:
+                    config = yaml.safe_load(f)
+                
+                # Create display section if it doesn't exist
+                if 'display' not in config:
+                    config['display'] = {}
+                
+                # Update max_packets value
+                if max_packets_value == -1:  # Unlimited
+                    config['display']['max_packets'] = -1
+                else:
+                    config['display']['max_packets'] = max_packets_value
+                
+                # Save update_interval_ms if it's not already in the config
+                if 'update_interval_ms' not in config['display']:
+                    config['display']['update_interval_ms'] = self.display_update_interval
+                
+                # Save the updated configuration
+                with open(config_path, 'w') as f:
+                    yaml.dump(config, f, default_flow_style=False)
+                
+                logger.info(f"Saved display configuration to {config_path}")
+                
+            except Exception as e:
+                logger.error(f"Error saving display configuration: {e}")
+        
+        except ImportError:
+            logger.warning("PyYAML not available, cannot save display settings")
     
     def handle_error(self, error_message):
         """Handle errors from the capture thread"""
@@ -3805,8 +4208,8 @@ class DesktopApp(QMainWindow):
                 # Write JSON file
                 progress.setLabelText("Writing JSON file...")
                 QApplication.processEvents()
-                with open(file_path, 'w') as f:
-                    json.dump(serializable_packets, f, indent=2)
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    json.dump(serializable_packets, f, indent=2, ensure_ascii=False)
                 
                 logger.info(f"Saved {len(serializable_packets)} packets to JSON file: {file_path}")
             
@@ -3818,7 +4221,8 @@ class DesktopApp(QMainWindow):
                 fields = ['frame_number', 'timestamp', 'src_ip', 'src_port', 
                          'dst_ip', 'dst_port', 'protocol', 'size', 'summary']
                 
-                with open(file_path, 'w', newline='') as f:
+                # Open file with UTF-8 encoding to handle Unicode characters
+                with open(file_path, 'w', newline='', encoding='utf-8') as f:
                     writer = csv.DictWriter(f, fieldnames=fields, extrasaction='ignore')
                     writer.writeheader()
                     
@@ -3827,11 +4231,12 @@ class DesktopApp(QMainWindow):
                         row = {}
                         for field in fields:
                             if field in packet:
-                                # Convert complex objects to strings
+                                # Convert complex objects to strings and handle Unicode
                                 if isinstance(packet[field], (dict, list)):
-                                    row[field] = str(packet[field])
+                                    row[field] = clean_unicode_for_csv(str(packet[field]))
                                 else:
-                                    row[field] = packet[field]
+                                    # Handle Unicode characters using helper function
+                                    row[field] = clean_unicode_for_csv(packet[field])
                             elif field == 'frame_number' and 'frame_number' not in packet:
                                 # Add frame number if not present
                                 row[field] = i + 1
@@ -3862,6 +4267,347 @@ class DesktopApp(QMainWindow):
             # Make sure progress dialog is closed
             progress.close()
     
+    def open_file(self):
+        """Open and load saved packet files (PCAP, CSV, JSON)"""
+        # Ask for file to open
+        file_dialog = QFileDialog()
+        file_dialog.setAcceptMode(QFileDialog.AcceptOpen)
+        file_dialog.setNameFilter("All supported files (*.pcap *.csv *.json);;PCAP files (*.pcap);;CSV files (*.csv);;JSON files (*.json)")
+        file_dialog.setFileMode(QFileDialog.ExistingFile)
+        
+        if not file_dialog.exec_():
+            return
+        
+        file_path = file_dialog.selectedFiles()[0]
+        
+        # Determine file type from extension
+        file_ext = file_path.lower().split('.')[-1]
+        
+        # Show loading dialog
+        progress = QProgressDialog("Loading file...", "Cancel", 0, 0, self)
+        progress.setWindowTitle("Loading Packets")
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)  # Show immediately
+        progress.setValue(0)
+        QApplication.processEvents()
+        
+        try:
+            if file_ext == 'pcap':
+                self.load_pcap_file(file_path, progress)
+            elif file_ext == 'csv':
+                self.load_csv_file(file_path, progress)
+            elif file_ext == 'json':
+                self.load_json_file(file_path, progress)
+            else:
+                QMessageBox.warning(self, "Unsupported Format", 
+                                   f"Unsupported file format: {file_ext}")
+                return
+            
+            # Update the display
+            self.update_packet_display()
+            self.update_protocol_stats()
+            
+            # Show success message
+            packet_count = len(self.captured_packets)
+            QMessageBox.information(self, "File Loaded", 
+                                   f"Successfully loaded {packet_count} packets from {file_path}")
+            
+            logger.info(f"Loaded {packet_count} packets from {file_path}")
+            
+        except Exception as e:
+            logger.error(f"Error loading file {file_path}: {e}")
+            QMessageBox.critical(self, "Load Error", f"Error loading file: {e}")
+        finally:
+            progress.close()
+    
+    def load_pcap_file(self, file_path, progress):
+        """Load packets from a PCAP file"""
+        from scapy.all import rdpcap
+        
+        progress.setLabelText("Reading PCAP file...")
+        QApplication.processEvents()
+        
+        # Read PCAP file
+        packets = rdpcap(file_path)
+        total_packets = len(packets)
+        
+        progress.setMaximum(total_packets)
+        progress.setLabelText(f"Processing {total_packets} packets...")
+        
+        # Clear existing packets
+        self.captured_packets.clear()
+        
+        # Process each packet
+        for i, packet in enumerate(packets):
+            if progress.wasCanceled():
+                logger.info("PCAP load canceled by user")
+                return
+            
+            # Process the packet using existing packet processing logic
+            packet_info = self._process_scapy_packet(packet, i + 1)
+            if packet_info:
+                self.captured_packets.append(packet_info)
+            
+            # Update progress every 100 packets
+            if i % 100 == 0:
+                progress.setValue(i)
+                QApplication.processEvents()
+        
+        progress.setValue(total_packets)
+    
+    def load_csv_file(self, file_path, progress):
+        """Load packets from a CSV file"""
+        import csv
+        
+        progress.setLabelText("Reading CSV file...")
+        QApplication.processEvents()
+        
+        # Clear existing packets
+        self.captured_packets.clear()
+        
+        # Read CSV file
+        with open(file_path, 'r', encoding='utf-8') as f:
+            # First pass: count rows
+            reader = csv.reader(f)
+            total_rows = sum(1 for row in reader) - 1  # Subtract header row
+            
+            # Reset file pointer
+            f.seek(0)
+            
+            progress.setMaximum(total_rows)
+            progress.setLabelText(f"Processing {total_rows} packets...")
+            
+            # Second pass: process data
+            reader = csv.DictReader(f)
+            
+            for i, row in enumerate(reader):
+                if progress.wasCanceled():
+                    logger.info("CSV load canceled by user")
+                    return
+                
+                # Convert CSV row to packet format
+                packet_info = self._csv_row_to_packet(row, i + 1)
+                if packet_info:
+                    self.captured_packets.append(packet_info)
+                
+                # Update progress every 100 packets
+                if i % 100 == 0:
+                    progress.setValue(i)
+                    QApplication.processEvents()
+            
+            progress.setValue(total_rows)
+    
+    def load_json_file(self, file_path, progress):
+        """Load packets from a JSON file"""
+        import json
+        
+        progress.setLabelText("Reading JSON file...")
+        QApplication.processEvents()
+        
+        # Read JSON file
+        with open(file_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        
+        if not isinstance(data, list):
+            raise ValueError("JSON file must contain a list of packets")
+        
+        total_packets = len(data)
+        progress.setMaximum(total_packets)
+        progress.setLabelText(f"Processing {total_packets} packets...")
+        
+        # Clear existing packets
+        self.captured_packets.clear()
+        
+        # Process each packet
+        for i, packet_data in enumerate(data):
+            if progress.wasCanceled():
+                logger.info("JSON load canceled by user")
+                return
+            
+            # Add frame number if not present
+            if 'frame_number' not in packet_data:
+                packet_data['frame_number'] = i + 1
+            
+            # Ensure required fields are present
+            packet_info = self._normalize_packet_data(packet_data)
+            self.captured_packets.append(packet_info)
+            
+            # Update progress every 100 packets
+            if i % 100 == 0:
+                progress.setValue(i)
+                QApplication.processEvents()
+        
+        progress.setValue(total_packets)
+    
+    def _process_scapy_packet(self, packet, frame_number):
+        """Process a scapy packet object into our packet format"""
+        try:
+            # Use the existing packet processing logic from the capture thread
+            metadata = {
+                "frame_number": frame_number,
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f"),
+                "size": len(packet),
+                "layers": [],
+                "packet_data": bytes(packet)  # Store raw packet data
+            }
+            
+            # Extract Ethernet layer metadata
+            if Ether in packet:
+                metadata.update({
+                    "mac_src": packet[Ether].src,
+                    "mac_dst": packet[Ether].dst,
+                    "eth_type": packet[Ether].type
+                })
+                metadata["layers"].append("Ethernet")
+            
+            # Extract IP layer metadata
+            if IP in packet:
+                metadata.update({
+                    "src_ip": packet[IP].src,
+                    "dst_ip": packet[IP].dst,
+                    "ttl": packet[IP].ttl,
+                    "ip_id": packet[IP].id,
+                    "ip_len": packet[IP].len,
+                    "ip_version": 4
+                })
+                metadata["layers"].append("IPv4")
+            
+            # Extract transport layer metadata
+            if TCP in packet:
+                metadata.update({
+                    "protocol": "TCP",
+                    "src_port": packet[TCP].sport,
+                    "dst_port": packet[TCP].dport,
+                    "seq": packet[TCP].seq,
+                    "ack": packet[TCP].ack,
+                    "window": packet[TCP].window
+                })
+                
+                # Extract TCP flags
+                flags = []
+                if packet[TCP].flags & 0x01: flags.append("FIN")
+                if packet[TCP].flags & 0x02: flags.append("SYN")
+                if packet[TCP].flags & 0x04: flags.append("RST")
+                if packet[TCP].flags & 0x08: flags.append("PSH")
+                if packet[TCP].flags & 0x10: flags.append("ACK")
+                if packet[TCP].flags & 0x20: flags.append("URG")
+                if packet[TCP].flags & 0x40: flags.append("ECE")
+                if packet[TCP].flags & 0x80: flags.append("CWR")
+                
+                metadata["tcp_flags"] = flags
+                metadata["layers"].append("TCP")
+                
+            elif UDP in packet:
+                metadata.update({
+                    "protocol": "UDP",
+                    "src_port": packet[UDP].sport,
+                    "dst_port": packet[UDP].dport
+                })
+                metadata["layers"].append("UDP")
+                
+                # Check for DNS
+                if DNS in packet:
+                    metadata["layers"].append("DNS")
+                    
+            elif ICMP in packet:
+                metadata.update({
+                    "protocol": "ICMP",
+                    "icmp_type": packet[ICMP].type,
+                    "icmp_code": packet[ICMP].code
+                })
+                metadata["layers"].append("ICMP")
+            
+            # Generate summary
+            metadata["summary"] = self._generate_packet_summary(metadata)
+            
+            return metadata
+            
+        except Exception as e:
+            logger.error(f"Error processing scapy packet: {e}")
+            return None
+    
+    def _csv_row_to_packet(self, row, frame_number):
+        """Convert a CSV row to packet format"""
+        try:
+            packet_info = {
+                "frame_number": frame_number,
+                "timestamp": row.get("timestamp", datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")),
+                "src_ip": row.get("src_ip", ""),
+                "dst_ip": row.get("dst_ip", ""),
+                "src_port": int(row.get("src_port", 0)) if row.get("src_port") and row.get("src_port").isdigit() else 0,
+                "dst_port": int(row.get("dst_port", 0)) if row.get("dst_port") and row.get("dst_port").isdigit() else 0,
+                "protocol": row.get("protocol", "UNKNOWN"),
+                "size": int(row.get("size", 0)) if row.get("size") and row.get("size").isdigit() else 0,
+                "summary": row.get("summary", ""),
+                "layers": []
+            }
+            
+            # Determine layers based on protocol
+            if packet_info["protocol"] == "TCP":
+                packet_info["layers"] = ["Ethernet", "IPv4", "TCP"]
+            elif packet_info["protocol"] == "UDP":
+                packet_info["layers"] = ["Ethernet", "IPv4", "UDP"]
+            elif packet_info["protocol"] == "ICMP":
+                packet_info["layers"] = ["Ethernet", "IPv4", "ICMP"]
+            
+            # Generate summary if not present
+            if not packet_info["summary"]:
+                packet_info["summary"] = self._generate_packet_summary(packet_info)
+            
+            return packet_info
+            
+        except Exception as e:
+            logger.error(f"Error converting CSV row to packet: {e}")
+            return None
+    
+    def _normalize_packet_data(self, packet_data):
+        """Normalize packet data to ensure consistent format"""
+        # Ensure required fields are present
+        normalized = {
+            "frame_number": packet_data.get("frame_number", 1),
+            "timestamp": packet_data.get("timestamp", datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")),
+            "src_ip": packet_data.get("src_ip", ""),
+            "dst_ip": packet_data.get("dst_ip", ""),
+            "src_port": packet_data.get("src_port", 0),
+            "dst_port": packet_data.get("dst_port", 0),
+            "protocol": packet_data.get("protocol", "UNKNOWN"),
+            "size": packet_data.get("size", 0),
+            "summary": packet_data.get("summary", ""),
+            "layers": packet_data.get("layers", [])
+        }
+        
+        # Copy any additional fields
+        for key, value in packet_data.items():
+            if key not in normalized:
+                normalized[key] = value
+        
+        # Generate summary if not present
+        if not normalized["summary"]:
+            normalized["summary"] = self._generate_packet_summary(normalized)
+        
+        return normalized
+    
+    def _generate_packet_summary(self, packet_info):
+        """Generate a summary string for a packet"""
+        try:
+            protocol = packet_info.get("protocol", "UNKNOWN")
+            src_ip = packet_info.get("src_ip", "")
+            dst_ip = packet_info.get("dst_ip", "")
+            src_port = packet_info.get("src_port", "")
+            dst_port = packet_info.get("dst_port", "")
+            size = packet_info.get("size", 0)
+            
+            if protocol in ["TCP", "UDP"] and src_port and dst_port:
+                return f"{protocol} {src_ip}:{src_port} → {dst_ip}:{dst_port} [{size} bytes]"
+            elif src_ip and dst_ip:
+                return f"{protocol} {src_ip} → {dst_ip} [{size} bytes]"
+            else:
+                return f"{protocol} packet [{size} bytes]"
+                
+        except Exception as e:
+            logger.error(f"Error generating packet summary: {e}")
+            return "Unknown packet"
+    
     def save_ui_state(self):
         """Save UI state including splitter positions"""
         try:
@@ -3875,150 +4621,57 @@ class DesktopApp(QMainWindow):
             settings.setValue("details_splitter", self.details_splitter.saveState())
             settings.setValue("horizontal_details_splitter", self.horizontal_details_splitter.saveState())
             
-            # Save splitter sizes
-            settings.setValue("main_splitter_sizes", self.main_splitter.sizes())
-            settings.setValue("details_splitter_sizes", self.details_splitter.sizes())
-            settings.setValue("horizontal_details_splitter_sizes", self.horizontal_details_splitter.sizes())
-            
-            # Save active tab indexes
-            settings.setValue("details_tab_index", self.details_tabs.currentIndex())
-            settings.setValue("secondary_tab_index", self.secondary_tabs.currentIndex())
-            
-            logger.info("UI state saved")
+            logger.info("UI state saved.")
         except Exception as e:
             logger.error(f"Error saving UI state: {e}")
-    
+
     def load_ui_state(self):
         """Load UI state including splitter positions"""
         try:
             settings = QSettings("PyGuard", "DesktopApp")
             
-            # Restore window geometry if available
+            # Load window geometry
             geometry = settings.value("geometry")
             if geometry:
                 self.restoreGeometry(geometry)
             
-            # Restore main splitter state if available
+            # Load splitter states
             main_splitter_state = settings.value("main_splitter")
             if main_splitter_state:
                 self.main_splitter.restoreState(main_splitter_state)
             else:
-                # Default sizes if no saved state
-                self.main_splitter.setSizes([500, 500])
-            
-            # Restore details splitter state if available
+                # Set default sizes if no state is saved
+                self.main_splitter.setSizes([400, 400])
+
             details_splitter_state = settings.value("details_splitter")
             if details_splitter_state:
                 self.details_splitter.restoreState(details_splitter_state)
             else:
-                # Default sizes if no saved state
-                self.details_splitter.setSizes([450, 50])
-                
-            # Restore horizontal details splitter state if available
+                self.details_splitter.setSizes([600, 200])
+
             horizontal_details_splitter_state = settings.value("horizontal_details_splitter")
             if horizontal_details_splitter_state:
                 self.horizontal_details_splitter.restoreState(horizontal_details_splitter_state)
             else:
-                # Default sizes if no saved state
                 self.horizontal_details_splitter.setSizes([400, 400])
-            
-            # Alternative: restore from saved sizes
-            main_sizes = settings.value("main_splitter_sizes")
-            if main_sizes and not main_splitter_state:
-                self.main_splitter.setSizes(main_sizes)
-                
-            details_sizes = settings.value("details_splitter_sizes")
-            if details_sizes and not details_splitter_state:
-                self.details_splitter.setSizes(details_sizes)
-                
-            horizontal_details_sizes = settings.value("horizontal_details_splitter_sizes")
-            if horizontal_details_sizes and not horizontal_details_splitter_state:
-                self.horizontal_details_splitter.setSizes(horizontal_details_sizes)
-                
-            # Restore active tab indexes
-            details_tab_index = settings.value("details_tab_index")
-            if details_tab_index is not None:
-                self.details_tabs.setCurrentIndex(int(details_tab_index))
-                
-            secondary_tab_index = settings.value("secondary_tab_index")
-            if secondary_tab_index is not None:
-                self.secondary_tabs.setCurrentIndex(int(secondary_tab_index))
-                
-            logger.info("UI state loaded")
+
+            logger.info("UI state loaded.")
         except Exception as e:
             logger.error(f"Error loading UI state: {e}")
-            # Set default sizes if loading fails
-            self.main_splitter.setSizes([500, 500])
-            self.details_splitter.setSizes([450, 50])
-            self.horizontal_details_splitter.setSizes([400, 400])
-    
+
     def closeEvent(self, event):
         """Handle window close event"""
-        # Save UI state before potentially closing
         self.save_ui_state()
-        
-        # Stop capture if running
-        if self.capture_thread and self.capture_thread.isRunning():
-            reply = QMessageBox.question(
-                self, "Confirm Exit",
-                "Capture is still running. Stop capture and exit?",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.No
-            )
-            
-            if reply == QMessageBox.Yes:
-                self.stop_capture()
-                
-                # Ask if user wants to save captured packets
-                if self.captured_packets:
-                    save_reply = QMessageBox.question(
-                        self, "Save Packets",
-                        f"Do you want to save {len(self.captured_packets)} captured packets?",
-                        QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes
-                    )
-                    
-                    if save_reply == QMessageBox.Yes:
-                        self.save_packets()
-                
-                event.accept()
-            else:
-                event.ignore()
-        else:
-            # Ask if user wants to save captured packets
-            if self.captured_packets:
-                save_reply = QMessageBox.question(
-                    self, "Save Packets",
-                    f"Do you want to save {len(self.captured_packets)} captured packets?",
-                    QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes
-                )
-                
-                if save_reply == QMessageBox.Yes:
-                    self.save_packets()
-            
-            event.accept()
-
-class LogHandler(logging.Handler):
-    """Custom log handler to display logs in the UI"""
-    
-    def __init__(self, text_edit):
-        super().__init__()
-        self.text_edit = text_edit
-        self.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-    
-    def emit(self, record):
-        """Emit a log record"""
-        msg = self.format(record)
-        self.text_edit.append(msg)
-        # Scroll to bottom
-        cursor = self.text_edit.textCursor()
-        cursor.movePosition(cursor.End)
-        self.text_edit.setTextCursor(cursor)
+        self.stop_capture()
+        event.accept()
 
 def main():
-    """Main entry point for the desktop application"""
+    """Main function to run the desktop application"""
     app = QApplication(sys.argv)
+    
+    # Create and show the main window
     window = DesktopApp()
     window.show()
+    
+    # Execute the application
     return app.exec_()
-
-if __name__ == "__main__":
-    sys.exit(main())

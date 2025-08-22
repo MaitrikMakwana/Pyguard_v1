@@ -1,0 +1,4 @@
+frame_number,timestamp,src_ip,src_port,dst_ip,dst_port,protocol,size,summary
+1,2025-01-04 12:00:00.123456,192.168.1.100,12345,8.8.8.8,53,UDP,64,DNS Query for google.com
+2,2025-01-04 12:00:00.234567,8.8.8.8,53,192.168.1.100,12345,UDP,128,DNS Response for google.com
+3,2025-01-04 12:00:01.345678,192.168.1.100,54321,172.217.14.110,80,TCP,1024,HTTP GET request
