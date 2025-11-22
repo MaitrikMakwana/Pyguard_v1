@@ -18,6 +18,8 @@ import ipaddress
 from datetime import datetime
 import random
 from collections import defaultdict, deque
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 import tempfile
 import binascii
 from PyQt5.QtCore import QSettings
@@ -67,7 +69,8 @@ from PyQt5.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView, QMenu, QAction,
     QFileDialog, QDialog, QRadioButton, QSpinBox, QTreeWidget, 
     QTreeWidgetItem, QProgressBar, QStatusBar, QLineEdit, QToolBar,
-    QToolButton, QSizePolicy, QFrame, QTextBrowser, QProgressDialog
+    QToolButton, QSizePolicy, QFrame, QTextBrowser, QProgressDialog,
+    QScrollArea
 )
 from PyQt5.QtCore import QTimer, QSize, Qt
 from PyQt5.QtGui import QFont, QColor, QCursor
@@ -89,6 +92,46 @@ from scapy.all import Ether, IP, IPv6, TCP, UDP, ICMP, ARP, DNS, Raw, Dot1Q, sni
 from scapy.layers.http import HTTP, HTTPRequest, HTTPResponse
 # TLS import removed as it's not available in this version of scapy
 import binascii
+
+# IDS integration imports
+try:
+    import requests
+except ImportError:
+    requests = None
+    logger.warning(
+        "requests library not available - remote IDS service disabled (local Final_IDS pipeline will be used if available)"
+    )
+
+try:
+    from .ids_service_manager import IDSServiceManager, IDSServiceError
+    from .ids_analysis_widget import IDSAnalysisWidget
+except ImportError:
+    from ids_service_manager import IDSServiceManager, IDSServiceError  # type: ignore
+    from ids_analysis_widget import IDSAnalysisWidget  # type: ignore
+
+
+class IDSAnalysisWorker(QThread):
+    """Background worker that sends PCAP data to the IDS service."""
+
+    finished = pyqtSignal(dict)
+    error = pyqtSignal(str)
+
+    def __init__(self, service_manager: IDSServiceManager, pcap_path: str) -> None:
+        super().__init__()
+        self.service_manager = service_manager
+        self.pcap_path = pcap_path
+
+    def run(self) -> None:
+        try:
+            results = self.service_manager.analyze_pcap(self.pcap_path)
+        except IDSServiceError as exc:
+            self.error.emit(str(exc))
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.exception("Unexpected IDS analysis error: %s", exc)
+            self.error.emit(str(exc))
+        else:
+            self.finished.emit(results)
+
 
 class PacketCapture(QThread):
     """Thread for capturing network packets with deep protocol inspection using scapy"""
@@ -692,9 +735,50 @@ class DesktopApp(QMainWindow):
         
         # Set up application-wide font
         self.setup_fonts()
-        
+
+        # Initialize ML Analysis
+        self.ml_inference_available = False
+
+        # IDS integration setup
+        self.ids_service_manager: Optional[IDSServiceManager] = None
+        self.ids_backend_available = False
+        try:
+            self.ids_service_manager = IDSServiceManager()
+            self.ids_backend_available = self.ids_service_manager.has_any_backend
+        except Exception as exc:
+            logger.warning("IDS integration disabled: %s", exc)
+
         # Initialize UI
         self.init_ui()
+        self.ids_analysis_widget: Optional[IDSAnalysisWidget] = None
+        self.ids_last_results: Optional[Dict] = None
+        self.ids_analysis_worker: Optional[IDSAnalysisWorker] = None
+        self.ids_progress_dialog: Optional[QProgressDialog] = None
+        self.ids_temp_pcap_path: Optional[str] = None
+
+    def load_display_config(self) -> None:
+        """Load optional display configuration; fall back to defaults if unavailable."""
+        config_path = Path("config.yaml")
+        if not config_path.exists():
+            return
+
+        try:
+            import yaml
+        except ImportError:
+            logger.warning("yaml library not available; skipping display configuration load.")
+            return
+
+        try:
+            with config_path.open("r", encoding="utf-8") as handle:
+                config = yaml.safe_load(handle) or {}
+        except Exception as exc:  # pragma: no cover - config optional
+            logger.warning("Failed to load display configuration: %s", exc)
+            return
+
+        display_cfg = config.get("display", {})
+        self.max_display_packets = int(display_cfg.get("max_packets", self.max_display_packets))
+        self.packet_buffer_size = int(display_cfg.get("packet_buffer_size", self.packet_buffer_size))
+        self.display_update_interval = int(display_cfg.get("display_update_interval", self.display_update_interval))
         
     def setup_fonts(self):
         """Set up application-wide fonts for better readability"""
@@ -774,6 +858,12 @@ class DesktopApp(QMainWindow):
         save_action.setToolTip("Save captured packets")
         save_action.triggered.connect(self.save_packets)
         self.toolbar.addAction(save_action)
+
+        self.analyze_ids_action = QAction("🔍 Analyze with IDS", self)
+        self.analyze_ids_action.setToolTip("Send captured packets to IDS for attack detection")
+        self.analyze_ids_action.triggered.connect(self.analyze_with_ids)
+        self.toolbar.addAction(self.analyze_ids_action)
+        self.analyze_ids_action.setEnabled(self.ids_backend_available)
         
         clear_action = QAction("🗑 Clear", self)
         clear_action.setToolTip("Clear display")
@@ -1321,6 +1411,26 @@ class DesktopApp(QMainWindow):
         
         # Add advanced filter tab to details tabs
         self.details_tabs.addTab(self.advanced_filter_widget, "Advanced Filter")
+
+        # IDS analysis tab
+        self.ids_analysis_widget = IDSAnalysisWidget(self)  # Pass self as parent to prevent garbage collection
+        self.ids_analysis_widget.analysisRequested.connect(self.analyze_with_ids)
+        self.ids_analysis_widget.serviceCheckRequested.connect(self.check_ids_service_status)
+        self.ids_analysis_widget.exportRequested.connect(self.export_ids_results)
+        self.ids_analysis_widget.clearRequested.connect(self.clear_ids_results)
+        self.details_tabs.addTab(self.ids_analysis_widget, "IDS Analysis")
+
+        if not self.ids_backend_available or not self.ids_service_manager:
+            self.ids_analysis_widget.set_error_state(
+                "IDS analysis is unavailable. Install the 'requests' package or ensure the Final_IDS models are present."
+            )
+            self.ids_analysis_widget.analyze_btn.setEnabled(False)
+        elif not self.ids_service_manager.has_remote_backend and self.ids_service_manager.supports_local_analysis:
+            self.ids_analysis_widget.set_info_state(
+                "Remote IDS service is unavailable. The built-in Final_IDS ML pipeline will run locally."
+            )
+        
+        # ML Analysis tab removed
         
         # Create details splitter - fully resizable
         self.details_splitter = QSplitter(self)
@@ -1868,6 +1978,361 @@ class DesktopApp(QMainWindow):
         except Exception as e:
             logger.error(f"Error restarting capture: {e}")
             self.statusBar().showMessage(f"Error: {e}")
+
+    # ------------------------------------------------------------------ #
+    # IDS integration
+    # ------------------------------------------------------------------ #
+    def analyze_with_ids(self):
+        """Handle Analyze with IDS button click."""
+        if not self.ids_service_manager:
+            QMessageBox.warning(
+                self,
+                "IDS Analysis",
+                "IDS integration is not initialized. Please restart the application after ensuring dependencies are installed.",
+            )
+            return
+
+        if not self.ids_service_manager.has_any_backend:
+            QMessageBox.warning(
+                self,
+                "IDS Analysis",
+                "IDS analysis is unavailable. Install the 'requests' package or ensure the Final_IDS models are present.",
+            )
+            return
+
+        if not self.captured_packets:
+            QMessageBox.information(
+                self,
+                "IDS Analysis",
+                "No captured packets are available for analysis.",
+            )
+            return
+
+        if self.ids_analysis_worker and self.ids_analysis_worker.isRunning():
+            QMessageBox.information(
+                self,
+                "IDS Analysis",
+                "An IDS analysis is already in progress.",
+            )
+            return
+
+        healthy = self.ids_service_manager.check_health()
+        if not healthy:
+            message = self.ids_service_manager.last_error or "Unable to reach the IDS backend."
+            if self.ids_service_manager.has_remote_backend:
+                response = QMessageBox.question(
+                    self,
+                    "IDS Service Not Reachable",
+                    f"{message}\n\nDo you want to attempt the analysis anyway?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No,
+                )
+                if response != QMessageBox.Yes:
+                    return
+            else:
+                QMessageBox.warning(self, "IDS Analysis", message)
+                return
+
+        try:
+            self._cleanup_ids_temp_file()
+            self.ids_temp_pcap_path = self._create_ids_temp_pcap()
+        except Exception as exc:
+            logger.error("Failed to prepare PCAP for IDS analysis: %s", exc)
+            QMessageBox.critical(self, "IDS Analysis", f"Failed to prepare capture for IDS: {exc}")
+            return
+
+        if self.ids_analysis_widget:
+            self.ids_analysis_widget.set_busy_state("Submitting capture to IDS...")
+
+        self._set_ids_actions_enabled(False)
+
+        self.ids_progress_dialog = QProgressDialog("Submitting capture to IDS...", None, 0, 0, self)
+        self.ids_progress_dialog.setWindowTitle("IDS Analysis")
+        self.ids_progress_dialog.setWindowModality(Qt.WindowModal)
+        self.ids_progress_dialog.setCancelButton(None)
+        self.ids_progress_dialog.setMinimumDuration(0)
+        self.ids_progress_dialog.show()
+
+        worker = IDSAnalysisWorker(self.ids_service_manager, self.ids_temp_pcap_path)
+        worker.finished.connect(self.on_ids_analysis_complete)
+        worker.error.connect(self.on_ids_analysis_error)
+        worker.finished.connect(worker.deleteLater)
+        worker.error.connect(worker.deleteLater)
+        self.ids_analysis_worker = worker
+        worker.start()
+
+    def check_ids_service_status(self):
+        """Verify IDS service is running."""
+        if not self.ids_service_manager:
+            QMessageBox.warning(
+                self,
+                "IDS Service",
+                "IDS integration is not initialized. Please restart the application after ensuring dependencies are installed.",
+            )
+            return
+
+        if not self.ids_service_manager.has_any_backend:
+            QMessageBox.warning(
+                self,
+                "IDS Service",
+                "IDS analysis is unavailable. Install the 'requests' package or ensure the Final_IDS models are present.",
+            )
+            return
+
+        if self.ids_service_manager.check_health():
+            backend = self.ids_service_manager.active_backend or "local"
+            if backend == "remote":
+                message = "Remote IDS service is reachable and healthy."
+            else:
+                message = "Local Final_IDS ML pipeline is ready to analyze captures."
+            QMessageBox.information(self, "IDS Service", message)
+        else:
+            message = self.ids_service_manager.last_error or "Unable to reach the IDS backend."
+            QMessageBox.warning(self, "IDS Service", message)
+
+    def on_ids_analysis_complete(self, results: Dict) -> None:
+        """Handle completion of the IDS analysis worker."""
+        logger.info("IDS analysis completed successfully.")
+        logger.debug(f"Raw results keys: {list(results.keys()) if isinstance(results, dict) else 'Not a dict'}")
+        self._cleanup_ids_temp_file()
+        self._set_ids_actions_enabled(True)
+
+        if self.ids_progress_dialog:
+            self.ids_progress_dialog.close()
+            self.ids_progress_dialog = None
+
+        self.ids_analysis_worker = None
+
+        if self.ids_service_manager:
+            prepared = self.ids_service_manager.prepare_results_payload(results)
+            logger.debug(f"Prepared payload keys: {list(prepared.keys())}")
+            logger.debug(f"Summary keys: {list(prepared.get('summary', {}).keys())}")
+            logger.debug(f"Total flows: {prepared.get('summary', {}).get('total_flows', 'N/A')}")
+        else:
+            prepared = {"raw": results, "summary": {}}
+        self.ids_last_results = prepared
+
+        # Ensure widget exists before displaying results
+        if self.ids_analysis_widget is None:
+            logger.warning("ids_analysis_widget is None - recreating widget...")
+            try:
+                self.ids_analysis_widget = IDSAnalysisWidget(self)
+                self.ids_analysis_widget.analysisRequested.connect(self.analyze_with_ids)
+                self.ids_analysis_widget.serviceCheckRequested.connect(self.check_ids_service_status)
+                self.ids_analysis_widget.exportRequested.connect(self.export_ids_results)
+                self.ids_analysis_widget.clearRequested.connect(self.clear_ids_results)
+                # Re-add to tabs if not already there
+                tab_index = self.details_tabs.indexOf(self.ids_analysis_widget)
+                if tab_index == -1:
+                    self.details_tabs.addTab(self.ids_analysis_widget, "IDS Analysis")
+                logger.info("IDS analysis widget recreated successfully.")
+            except Exception as exc:
+                logger.error("Failed to recreate IDS analysis widget: %s", exc)
+                return
+        
+        # Display results in the widget
+        try:
+            logger.debug("Calling ids_analysis_widget.display_results...")
+            self.ids_analysis_widget.display_results(prepared)
+            # Force UI refresh
+            self.ids_analysis_widget.update()
+            self.ids_analysis_widget.repaint()
+            # Switch to IDS Analysis tab to show results
+            self.details_tabs.setCurrentWidget(self.ids_analysis_widget)
+            logger.debug("IDS analysis widget updated, UI refreshed, and tab switched.")
+        except Exception as exc:
+            logger.error("Failed to display IDS results: %s", exc)
+
+        backend_label = "local Final_IDS pipeline"
+        if self.ids_service_manager and self.ids_service_manager.active_backend != "local":
+            backend_label = "IDS service"
+        self.statusBar().showMessage(f"IDS analysis complete via {backend_label}.", 5000)
+
+    def on_ids_analysis_error(self, message: str) -> None:
+        """Handle errors from the IDS analysis worker."""
+        logger.error("IDS analysis failed: %s", message)
+        self._cleanup_ids_temp_file()
+        self._set_ids_actions_enabled(True)
+
+        if self.ids_progress_dialog:
+            self.ids_progress_dialog.close()
+            self.ids_progress_dialog = None
+
+        if self.ids_analysis_widget:
+            self.ids_analysis_widget.set_error_state(f"IDS analysis failed: {message}")
+
+        QMessageBox.critical(self, "IDS Analysis", f"IDS analysis failed:\n{message}")
+        self.ids_analysis_worker = None
+
+    def export_ids_results(self) -> None:
+        """Export IDS results to a CSV file."""
+        if not self.ids_last_results:
+            QMessageBox.information(self, "Export IDS Results", "No IDS results are available to export.")
+            return
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export IDS Results",
+            "ids_analysis_results.csv",
+            "CSV Files (*.csv);;All Files (*.*)",
+        )
+        if not file_path:
+            return
+
+        summary = self.ids_last_results.get("summary") or {}
+        detailed = summary.get("detailed_results") or []
+
+        try:
+            with open(file_path, "w", newline="", encoding="utf-8") as csvfile:
+                writer = csv.writer(csvfile)
+
+                writer.writerow(["Metric", "Value"])
+                writer.writerow(["Total Flows", summary.get("total_flows", 0)])
+                writer.writerow(["Attack Flows", summary.get("attack_flows", 0)])
+                writer.writerow(["Benign Flows", summary.get("benign_flows", 0)])
+                writer.writerow(["Average Confidence", f"{summary.get('average_confidence', 0.0):.4f}"])
+
+                writer.writerow([])
+                writer.writerow(["Attack Type", "Flow Count"])
+                for label, count in (summary.get("attack_summary") or {}).items():
+                    writer.writerow([label, count])
+
+                writer.writerow([])
+                writer.writerow(["Flow ID", "Source IP", "Destination IP", "Predicted Label", "Confidence"])
+                for index, record in enumerate(detailed[:100], start=1):
+                    flow_id = record.get("flow_id") or record.get("Flow ID") or index
+                    src_ip = record.get("src_ip") or record.get("Source IP") or record.get("Src IP") or ""
+                    dst_ip = record.get("dst_ip") or record.get("Destination IP") or record.get("Dest IP") or ""
+                    label = record.get("Predicted_Label") or record.get("label") or record.get("Label") or ""
+                    confidence = record.get("Confidence", "")
+
+                    writer.writerow(
+                        [
+                            clean_unicode_for_csv(flow_id),
+                            clean_unicode_for_csv(src_ip),
+                            clean_unicode_for_csv(dst_ip),
+                            clean_unicode_for_csv(label),
+                            clean_unicode_for_csv(confidence),
+                        ]
+                    )
+        except OSError as exc:
+            logger.error("Failed to export IDS results: %s", exc)
+            QMessageBox.critical(self, "Export IDS Results", f"Failed to export IDS results:\n{exc}")
+            return
+
+        self.statusBar().showMessage(f"IDS results exported to {file_path}", 5000)
+
+    def clear_ids_results(self) -> None:
+        """Clear cached IDS results when the widget is reset."""
+        self.ids_last_results = None
+
+    def _set_ids_actions_enabled(self, enabled: bool) -> None:
+        """Enable or disable IDS-related actions in the UI."""
+        if not self.ids_service_manager:
+            allow = False
+        else:
+            allow = enabled and self.ids_service_manager.has_any_backend
+        if hasattr(self, "analyze_ids_action") and self.analyze_ids_action:
+            self.analyze_ids_action.setEnabled(allow)
+        if self.ids_analysis_widget:
+            self.ids_analysis_widget.analyze_btn.setEnabled(allow)
+
+    def _create_ids_temp_pcap(self) -> str:
+        """Create a temporary PCAP file from the captured packets."""
+        if not self.captured_packets:
+            raise ValueError("No packets available to export.")
+
+        fd, path = tempfile.mkstemp(prefix="pyguard_ids_", suffix=".pcap")
+        os.close(fd)
+
+        written = self._write_packets_to_pcap(self.captured_packets, path)
+        if written == 0:
+            os.remove(path)
+            raise ValueError("No packets contained raw data suitable for PCAP export.")
+
+        return path
+
+    def _write_packets_to_pcap(self, packets: List[Dict], destination: str) -> int:
+        """Write captured packets to a PCAP file."""
+        written = 0
+        with open(destination, "wb") as handle:
+            handle.write(struct.pack("<IHHIIII", 0xA1B2C3D4, 2, 4, 0, 0, 65535, 1))
+            for packet in packets:
+                packet_data = packet.get("packet_data")
+                if not packet_data:
+                    continue
+
+                ts_sec, ts_usec = self._parse_packet_timestamp(packet.get("timestamp"))
+                incl_len = len(packet_data)
+                handle.write(struct.pack("<IIII", ts_sec, ts_usec, incl_len, incl_len))
+                handle.write(packet_data)
+                written += 1
+        return written
+
+    def _write_packets_to_csv(self, packets: List[Dict], destination: str) -> int:
+        """Write captured packets to a CSV file."""
+        fieldnames = [
+            "frame_number",
+            "timestamp",
+            "src_ip",
+            "src_port",
+            "dst_ip",
+            "dst_port",
+            "protocol",
+            "size",
+            "summary",
+        ]
+
+        written = 0
+        with open(destination, "w", newline="", encoding="utf-8") as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
+
+            for packet in packets:
+                row = {
+                    "frame_number": packet.get("frame_number", written + 1),
+                    "timestamp": packet.get("timestamp", ""),
+                    "src_ip": packet.get("src_ip", ""),
+                    "src_port": packet.get("src_port", ""),
+                    "dst_ip": packet.get("dst_ip", ""),
+                    "dst_port": packet.get("dst_port", ""),
+                    "protocol": packet.get("protocol", ""),
+                    "size": packet.get("size", 0),
+                    "summary": packet.get("summary", ""),
+                }
+                writer.writerow({k: clean_unicode_for_csv(v) for k, v in row.items()})
+                written += 1
+
+        return written
+
+    def _parse_packet_timestamp(self, timestamp: Optional[str]) -> Tuple[int, int]:
+        """Convert packet timestamp string to epoch seconds and microseconds."""
+        if not timestamp:
+            now = time.time()
+            sec = int(now)
+            usec = int((now - sec) * 1_000_000)
+            return sec, usec
+
+        for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
+            try:
+                dt = datetime.strptime(timestamp, fmt)
+                return int(dt.timestamp()), dt.microsecond
+            except ValueError:
+                continue
+
+        now = time.time()
+        sec = int(now)
+        usec = int((now - sec) * 1_000_000)
+        return sec, usec
+
+    def _cleanup_ids_temp_file(self) -> None:
+        """Remove any temporary PCAP file generated for IDS analysis."""
+        if self.ids_temp_pcap_path and os.path.exists(self.ids_temp_pcap_path):
+            try:
+                os.remove(self.ids_temp_pcap_path)
+            except OSError as exc:
+                logger.warning("Failed to remove temporary IDS PCAP file %s: %s", self.ids_temp_pcap_path, exc)
+        self.ids_temp_pcap_path = None
     
     def queue_packet(self, metadata):
         """Add packet to processing queue"""
@@ -2136,6 +2601,106 @@ class DesktopApp(QMainWindow):
         except Exception as e:
             logger.error(f"Error updating advanced filter table: {e}")
     
+    def update_protocol_stats(self, packet: Dict[str, Any]) -> None:
+        """Increment protocol counters and refresh their labels."""
+        protocol = str(packet.get("protocol", "")).upper()
+        layers = [
+            str(layer).upper()
+            for layer in packet.get("layers", [])
+            if isinstance(layer, str)
+        ]
+
+        def bump(key: str) -> None:
+            self.protocol_stats[key] = self.protocol_stats.get(key, 0) + 1
+
+        matched = False
+        if protocol == "TCP" or "TCP" in layers:
+            bump("tcp_packets")
+            matched = True
+        elif protocol == "UDP" or "UDP" in layers:
+            bump("udp_packets")
+            matched = True
+        elif protocol == "ICMP" or "ICMP" in layers:
+            bump("icmp_packets")
+            matched = True
+        elif protocol == "ARP" or "ARP" in layers:
+            bump("arp_packets")
+            matched = True
+
+        # Higher-layer protocols (count independently of transport)
+        if protocol == "DNS" or "DNS" in layers or packet.get("dns"):
+            bump("dns_packets")
+        if protocol == "HTTP" or "HTTP" in layers or packet.get("http_data"):
+            bump("http_packets")
+
+        if not matched:
+            bump("other_packets")
+
+        # Update the labels so the UI reflects the latest totals immediately
+        self.tcp_label.setText(f"TCP: {self.protocol_stats['tcp_packets']:,}")
+        self.udp_label.setText(f"UDP: {self.protocol_stats['udp_packets']:,}")
+        self.icmp_label.setText(f"ICMP: {self.protocol_stats['icmp_packets']:,}")
+        self.other_label.setText(f"Other: {self.protocol_stats['other_packets']:,}")
+
+    def update_status(self, stats: Dict[str, Any]) -> None:
+        """Update capture statistics shown in the status widgets."""
+        if self.capture_thread and self.capture_thread.isRunning():
+            self.status_label.setText("Running")
+            self.status_label.setStyleSheet("color: #388e3c; font-weight: bold;")
+        else:
+            self.status_label.setText("Stopped")
+            self.status_label.setStyleSheet("color: #d32f2f; font-weight: bold;")
+
+        packets_captured = stats.get("packets_captured", 0)
+        self.packets_label.setText(f"Packets: {packets_captured:,}")
+
+        bytes_captured = stats.get("bytes_captured", 0)
+        if bytes_captured < 1024:
+            self.bytes_label.setText(f"Bytes: {bytes_captured:,} B")
+        elif bytes_captured < 1024 * 1024:
+            self.bytes_label.setText(f"Bytes: {bytes_captured / 1024:.1f} KB")
+        else:
+            self.bytes_label.setText(f"Bytes: {bytes_captured / (1024 * 1024):.1f} MB")
+
+        if stats.get("start_time"):
+            elapsed = time.time() - stats["start_time"]
+            if elapsed > 0:
+                rate = stats.get("packets_captured", 0) / elapsed
+                self.rate_label.setText(f"Rate: {rate:.1f}/s")
+
+            elapsed_str = time.strftime("%H:%M:%S", time.gmtime(elapsed))
+            status_msg = f"Running for {elapsed_str}"
+            if hasattr(self, "last_packet_count") and hasattr(self, "last_update_time"):
+                time_diff = time.time() - self.last_update_time
+                if time_diff > 0:
+                    recent_rate = (packets_captured - self.last_packet_count) / time_diff
+                    status_msg = f"{status_msg} | Current rate: {recent_rate:.1f} packets/sec"
+            self.last_packet_count = packets_captured
+            self.last_update_time = time.time()
+            self.statusBar().showMessage(status_msg)
+
+    def handle_error(self, error_message: str) -> None:
+        """Handle errors emitted from worker threads."""
+        logger.error("Capture error: %s", error_message)
+        self.status_label.setText("Error")
+        self.status_label.setStyleSheet("color: #d32f2f; font-weight: bold;")
+        self.statusBar().showMessage(f"Error: {error_message}")
+
+        QMessageBox.critical(self, "Capture Error", f"Failed to capture packets:\n{error_message}")
+
+        if self.capture_thread and self.capture_thread.isRunning():
+            try:
+                self.capture_thread.stop()
+                if not self.capture_thread.wait(2000):
+                    self.capture_thread.terminate()
+                    self.capture_thread.wait(500)
+            except Exception as exc:
+                logger.exception("Failed to stop capture thread: %s", exc)
+
+        self.start_button.setEnabled(True)
+        self.stop_button.setEnabled(False)
+        self.progress_bar.setVisible(False)
+
     def handle_packet(self, metadata):
         """Handle a captured packet"""
         if metadata:
@@ -2247,6 +2812,786 @@ class DesktopApp(QMainWindow):
                 
             self.statusBar().showMessage(f"Selected: Packet #{row+1} | {protocol} | {src} → {dst} | {packet.get('size', 0)} bytes")
             
+    def open_file(self) -> None:
+        """Placeholder for opening saved packet files."""
+        QMessageBox.information(
+            self,
+            "Open File",
+            "Opening saved packet captures is not yet implemented in this build.",
+        )
+
+    def save_packets(self) -> None:
+        """Save captured packets to a PCAP or CSV file."""
+        if not self.captured_packets:
+            QMessageBox.information(self, "Save Packets", "No captured packets to save.")
+            return
+
+        default_name = "pyguard_capture"
+        file_path, selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "Save Captured Packets",
+            default_name,
+            "PCAP Files (*.pcap);;CSV Files (*.csv)",
+        )
+
+        if not file_path:
+            return
+
+        suffix = Path(file_path).suffix.lower()
+        if not suffix:
+            if "pcap" in selected_filter.lower():
+                suffix = ".pcap"
+            else:
+                suffix = ".csv"
+            file_path += suffix
+
+        try:
+            if suffix == ".pcap":
+                written = self._write_packets_to_pcap(self.captured_packets, file_path)
+                if written == 0:
+                    QMessageBox.warning(
+                        self,
+                        "Save Packets",
+                        "No packets contained raw data suitable for PCAP export.",
+                    )
+                    try:
+                        os.remove(file_path)
+                    except OSError:
+                        pass
+                    return
+                message = f"Saved {written} packets to {file_path}"
+                QMessageBox.information(self, "Save Packets", message)
+                self.statusBar().showMessage(message)
+            elif suffix == ".csv":
+                written = self._write_packets_to_csv(self.captured_packets, file_path)
+                message = f"Saved {written} packets to {file_path}"
+                QMessageBox.information(self, "Save Packets", message)
+                self.statusBar().showMessage(message)
+            else:
+                QMessageBox.warning(
+                    self,
+                    "Save Packets",
+                    "Unsupported file extension. Please use .pcap or .csv.",
+                )
+        except Exception as exc:
+            logger.error("Failed to save packets: %s", exc)
+            QMessageBox.critical(self, "Save Packets", f"Failed to save packets:\n{exc}")
+
+    def clear_display(self) -> None:
+        """Clear captured packet data from the UI."""
+        self.captured_packets.clear()
+        self.packet_table.setRowCount(0)
+        self.packet_tree.clear()
+        self.hex_view.clear()
+        self.raw_view.clear()
+        self.summary_view.clear()
+        self.log_view.clear()
+        self.advanced_filter_table.setRowCount(0)
+        self.advanced_filter_status.setText("No packets captured yet.")
+        self.statusBar().showMessage("Display cleared.")
+
+    def set_packet_limit(self, text: str) -> None:
+        """Update the in-memory packet display limit based on combo selection."""
+        text = text.strip()
+        if text.lower() == "unlimited":
+            self.max_display_packets = float("inf")
+            return
+
+        digits = "".join(ch for ch in text if ch.isdigit())
+        if digits:
+            try:
+                self.max_display_packets = int(digits)
+            except ValueError:
+                logger.warning("Invalid packet limit value: %s", text)
+
+    def show_color_legend(self) -> None:
+        """Display a comprehensive color legend dialog with detailed protocol information."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Packet Color Legend - Complete Reference")
+        dialog.resize(680, 600)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(15, 15, 15, 15)
+        layout.setSpacing(10)
+
+        title = QLabel("Packet Color Coding System")
+        title.setStyleSheet("font-weight: bold; font-size: 16pt; color: #2196F3;")
+        layout.addWidget(title)
+
+        # Build comprehensive HTML content
+        html = [
+            "<style>",
+            "body { font-family: Arial, sans-serif; line-height: 1.6; }",
+            ".sw { display:inline-block; width:32px; height:20px; border:2px solid #333; margin-right:12px; vertical-align:middle; border-radius:3px; }",
+            ".row { margin-bottom:12px; padding:8px; background:#f9f9f9; border-left:3px solid #2196F3; }",
+            ".protocol-name { font-weight:bold; color:#1976D2; font-size:13pt; }",
+            ".protocol-desc { color:#555; margin-left:44px; }",
+            ".hex-code { color:#666; font-family:monospace; font-size:10pt; }",
+            "h3 { color:#1976D2; border-bottom:2px solid #E3F2FD; padding-bottom:5px; }",
+            "pre { background:#f5f5f5; padding:10px; border:1px solid #ddd; border-radius:4px; font-size:10pt; }",
+            ".note { background:#FFF3CD; padding:10px; border-left:4px solid #FFC107; margin:10px 0; }",
+            "</style>",
+            "<h3>Protocol Color Reference</h3>",
+            
+            "<div class='row'>",
+            "<span class='sw' style='background:#FFC8C8'></span>",
+            "<span class='protocol-name'>Error Packets</span>",
+            "<div class='protocol-desc'>Packets with processing errors, malformed frames, or parsing failures. These may indicate network issues or corrupted data.</div>",
+            "<div class='hex-code'>Color: #FFC8C8 (Light Red)</div>",
+            "</div>",
+            
+            "<div class='row'>",
+            "<span class='sw' style='background:#D2E6FF'></span>",
+            "<span class='protocol-name'>HTTP Traffic (Port 80)</span>",
+            "<div class='protocol-desc'>Hypertext Transfer Protocol - Unencrypted web traffic. Includes HTTP requests (GET, POST, etc.) and responses. Commonly used for web browsing.</div>",
+            "<div class='hex-code'>Color: #D2E6FF (Light Blue) | Ports: 80 (source or destination)</div>",
+            "</div>",
+            
+            "<div class='row'>",
+            "<span class='sw' style='background:#B4D2FF'></span>",
+            "<span class='protocol-name'>HTTPS Traffic (Port 443)</span>",
+            "<div class='protocol-desc'>Hypertext Transfer Protocol Secure - Encrypted web traffic using TLS/SSL. Used for secure web browsing, API calls, and secure data transfer.</div>",
+            "<div class='hex-code'>Color: #B4D2FF (Medium Blue) | Ports: 443 (source or destination)</div>",
+            "</div>",
+            
+            "<div class='row'>",
+            "<span class='sw' style='background:#FFE6C8'></span>",
+            "<span class='protocol-name'>SSH Traffic (Port 22)</span>",
+            "<div class='protocol-desc'>Secure Shell - Encrypted remote access protocol. Used for secure command-line access to servers and secure file transfers.</div>",
+            "<div class='hex-code'>Color: #FFE6C8 (Light Orange) | Ports: 22 (source or destination)</div>",
+            "</div>",
+            
+            "<div class='row'>",
+            "<span class='sw' style='background:#FFC8E6'></span>",
+            "<span class='protocol-name'>FTP Traffic (Port 21)</span>",
+            "<div class='protocol-desc'>File Transfer Protocol - Used for transferring files between systems. Note: Standard FTP is unencrypted.</div>",
+            "<div class='hex-code'>Color: #FFC8E6 (Light Pink) | Ports: 21 (source or destination)</div>",
+            "</div>",
+            
+            "<div class='row'>",
+            "<span class='sw' style='background:#E6D2FF'></span>",
+            "<span class='protocol-name'>DNS Traffic (Port 53)</span>",
+            "<div class='protocol-desc'>Domain Name System - Resolves domain names to IP addresses. Includes DNS queries and responses. Essential for internet connectivity.</div>",
+            "<div class='hex-code'>Color: #E6D2FF (Light Purple) | Ports: 53 (source or destination)</div>",
+            "</div>",
+            
+            "<div class='row'>",
+            "<span class='sw' style='background:#C8FFE6'></span>",
+            "<span class='protocol-name'>DHCP Traffic (Ports 67/68)</span>",
+            "<div class='protocol-desc'>Dynamic Host Configuration Protocol - Automatically assigns IP addresses and network configuration to devices on a network.</div>",
+            "<div class='hex-code'>Color: #C8FFE6 (Light Cyan) | Ports: 67, 68 (source or destination)</div>",
+            "</div>",
+            
+            "<div class='row'>",
+            "<span class='sw' style='background:#FFFFC8'></span>",
+            "<span class='protocol-name'>ICMP Traffic</span>",
+            "<div class='protocol-desc'>Internet Control Message Protocol - Network diagnostic protocol. Includes ping (echo request/reply), traceroute, and error messages.</div>",
+            "<div class='hex-code'>Color: #FFFFC8 (Light Yellow) | Protocol: ICMP</div>",
+            "</div>",
+            
+            "<div class='row'>",
+            "<span class='sw' style='background:#D2FFD2'></span>",
+            "<span class='protocol-name'>ARP Traffic</span>",
+            "<div class='protocol-desc'>Address Resolution Protocol - Maps IP addresses to MAC addresses on local networks. Essential for local network communication.</div>",
+            "<div class='hex-code'>Color: #D2FFD2 (Light Green) | Protocol: ARP</div>",
+            "</div>",
+            
+            "<div class='row'>",
+            "<span class='sw' style='background:#F0F8FF'></span>",
+            "<span class='protocol-name'>TCP (Other Ports)</span>",
+            "<div class='protocol-desc'>Transmission Control Protocol - Reliable, connection-oriented protocol. Includes all TCP traffic not matching specific port-based rules above.</div>",
+            "<div class='hex-code'>Color: #F0F8FF (Alice Blue) | Protocol: TCP</div>",
+            "</div>",
+            
+            "<div class='row'>",
+            "<span class='sw' style='background:#F0FFF0'></span>",
+            "<span class='protocol-name'>UDP (Other Ports)</span>",
+            "<div class='protocol-desc'>User Datagram Protocol - Fast, connectionless protocol. Includes all UDP traffic not matching specific port-based rules above.</div>",
+            "<div class='hex-code'>Color: #F0FFF0 (Honeydew) | Protocol: UDP</div>",
+            "</div>",
+            
+            "<div class='row'>",
+            "<span class='sw' style='background:#FFFFFF; border:2px solid #ccc;'></span>",
+            "<span class='protocol-name'>Default / Other Protocols</span>",
+            "<div class='protocol-desc'>Packets that don't match any specific coloring rule. Includes IPv6, other transport protocols, or unrecognized packet types.</div>",
+            "<div class='hex-code'>Color: #FFFFFF (White) | Default background</div>",
+            "</div>",
+            
+            "<hr style='margin:20px 0;'>",
+            "<h3>Usage Tips</h3>",
+            "<div class='note'>",
+            "<b>Color Coding Benefits:</b><br>",
+            "• Quick visual identification of protocol types at a glance<br>",
+            "• Easier to spot specific traffic patterns (e.g., all HTTP in blue)<br>",
+            "• Helps identify unusual protocols or unexpected traffic<br>",
+            "• Colors are applied automatically based on packet analysis<br><br>",
+            "<b>Note:</b> Colors are for visual reference only. You can still sort, filter, and analyze packets regardless of their color. ",
+            "Click any packet row to view detailed protocol information in the packet details panel.",
+            "</div>",
+            
+            "<h3>Quick Reference Examples</h3>",
+            "<pre>",
+            "🔴 Red (Error)      → Malformed or corrupted packets\n",
+            "🔵 Blue (HTTP)      → Web traffic on port 80\n",
+            "🔵 Dark Blue (HTTPS) → Encrypted web traffic on port 443\n",
+            "🟠 Orange (SSH)     → Secure shell connections on port 22\n",
+            "🟣 Purple (DNS)      → Domain name resolution on port 53\n",
+            "🟡 Yellow (ICMP)     → Ping and network diagnostics\n",
+            "🟢 Green (ARP)       → Local network address resolution\n",
+            "⚪ White (Default)   → Other protocols or unrecognized\n",
+            "</pre>",
+        ]
+
+        browser = QTextBrowser()
+        browser.setHtml('\n'.join(html))
+        browser.setOpenExternalLinks(True)
+        browser.setReadOnly(True)
+        browser.setMinimumHeight(400)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(browser)
+        layout.addWidget(scroll, 1)
+
+        # Buttons: copy legend text and close
+        btn_layout = QHBoxLayout()
+        copy_btn = QPushButton("📋 Copy Legend")
+        copy_btn.setToolTip("Copy the complete color legend to clipboard")
+        def _copy_legend():
+            clipboard = QApplication.clipboard()
+            clipboard.setText(browser.toPlainText())
+            self.statusBar().showMessage("Color legend copied to clipboard", 3000)
+        copy_btn.clicked.connect(_copy_legend)
+        btn_layout.addWidget(copy_btn)
+        btn_layout.addStretch(1)
+        from PyQt5.QtWidgets import QDialogButtonBox
+        close_buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        close_buttons.rejected.connect(dialog.reject)
+        btn_layout.addWidget(close_buttons)
+        layout.addLayout(btn_layout)
+
+        dialog.setLayout(layout)
+        dialog.exec_()
+
+    def show_filter_help(self) -> None:
+        """Show comprehensive help for capture (BPF) filters and advanced filtering."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Complete Filter Guide - BPF & Advanced Filters")
+        dialog.resize(800, 700)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(15, 15, 15, 15)
+
+        title = QLabel("Network Packet Filtering Guide")
+        title.setStyleSheet("font-weight: bold; font-size: 16pt; color: #2196F3;")
+        layout.addWidget(title)
+
+        # Comprehensive HTML content
+        html_parts = [
+            "<style>",
+            "body { font-family: Arial, sans-serif; line-height: 1.6; }",
+            "h3 { color:#1976D2; border-bottom:2px solid #E3F2FD; padding-bottom:5px; margin-top:20px; }",
+            "h4 { color:#424242; margin-top:15px; }",
+            "pre { background:#f5f5f5; padding:12px; border:1px solid #ddd; border-radius:4px; font-size:10pt; overflow-x:auto; }",
+            ".note { background:#E3F2FD; padding:10px; border-left:4px solid #2196F3; margin:10px 0; }",
+            ".warning { background:#FFF3CD; padding:10px; border-left:4px solid #FFC107; margin:10px 0; }",
+            ".tip { background:#E8F5E9; padding:10px; border-left:4px solid #4CAF50; margin:10px 0; }",
+            "code { background:#f0f0f0; padding:2px 6px; border-radius:3px; font-family:monospace; }",
+            "table { border-collapse:collapse; width:100%; margin:10px 0; }",
+            "td, th { border:1px solid #ddd; padding:8px; text-align:left; }",
+            "th { background:#2196F3; color:white; }",
+            "</style>",
+            
+            "<h3>📡 BPF (Berkeley Packet Filter) - Capture-Time Filtering</h3>",
+            "<div class='note'>",
+            "<b>What is BPF?</b> BPF filters are applied <i>during packet capture</i> by the network interface driver. ",
+            "Only packets matching the filter are captured and passed to the application. This is highly efficient ",
+            "because it reduces CPU usage, memory consumption, and disk I/O at the source.",
+            "</div>",
+            
+            "<h4>Basic BPF Syntax</h4>",
+            "<table>",
+            "<tr><th>Filter Expression</th><th>Description</th><th>Example</th></tr>",
+            "<tr><td><code>tcp</code></td><td>Capture only TCP packets</td><td>All TCP traffic</td></tr>",
+            "<tr><td><code>udp</code></td><td>Capture only UDP packets</td><td>All UDP traffic</td></tr>",
+            "<tr><td><code>icmp</code></td><td>Capture ICMP packets (ping, etc.)</td><td>Network diagnostics</td></tr>",
+            "<tr><td><code>arp</code></td><td>Capture ARP packets</td><td>Address resolution</td></tr>",
+            "<tr><td><code>host IP</code></td><td>Packets to or from IP address</td><td><code>host 192.168.1.10</code></td></tr>",
+            "<tr><td><code>src host IP</code></td><td>Packets from source IP only</td><td><code>src host 10.0.0.5</code></td></tr>",
+            "<tr><td><code>dst host IP</code></td><td>Packets to destination IP only</td><td><code>dst host 10.0.0.5</code></td></tr>",
+            "<tr><td><code>port N</code></td><td>Packets with source OR destination port</td><td><code>port 80</code></td></tr>",
+            "<tr><td><code>src port N</code></td><td>Packets from source port only</td><td><code>src port 443</code></td></tr>",
+            "<tr><td><code>dst port N</code></td><td>Packets to destination port only</td><td><code>dst port 22</code></td></tr>",
+            "<tr><td><code>portrange N-M</code></td><td>Packets in port range</td><td><code>portrange 1024-2048</code></td></tr>",
+            "<tr><td><code>net CIDR</code></td><td>Packets to/from network/subnet</td><td><code>net 192.168.0.0/16</code></td></tr>",
+            "</table>",
+            
+            "<h4>Logical Operators</h4>",
+            "<pre>",
+            "# AND operator - both conditions must be true\n",
+            "tcp and port 80                    # TCP packets on port 80\n",
+            "host 192.168.1.10 and tcp          # TCP packets to/from specific host\n\n",
+            "# OR operator - either condition can be true\n",
+            "port 80 or port 443                # HTTP or HTTPS traffic\n",
+            "tcp or udp                          # Any TCP or UDP traffic\n\n",
+            "# NOT operator - exclude matching packets\n",
+            "not tcp                             # All packets except TCP\n",
+            "not port 22                         # All packets except SSH\n\n",
+            "# Parentheses for grouping\n",
+            "tcp and (port 80 or port 443)      # TCP on HTTP or HTTPS ports\n",
+            "(src host 10.0.0.5) or (dst host 10.0.0.5)  # Packets involving host\n",
+            "</pre>",
+            
+            "<h4>Advanced BPF Examples</h4>",
+            "<pre>",
+            "# Capture web traffic only\n",
+            "tcp and (port 80 or port 443)\n\n",
+            "# Capture traffic from specific subnet\n",
+            "net 192.168.1.0/24\n\n",
+            "# Capture DNS queries\n",
+            "udp and port 53\n\n",
+            "# Capture SSH connections to specific host\n",
+            "tcp and dst host 192.168.1.100 and dst port 22\n\n",
+            "# Capture large packets (over 1000 bytes)\n",
+            "greater 1000\n\n",
+            "# Capture broadcast traffic\n",
+            "broadcast\n\n",
+            "# Capture multicast traffic\n",
+            "multicast\n",
+            "</pre>",
+            
+            "<div class='tip'>",
+            "<b>💡 Best Practice:</b> Use BPF filters to reduce the volume of captured traffic, especially on busy networks. ",
+            "This improves performance and makes analysis easier.",
+            "</div>",
+            
+            "<hr style='margin:20px 0;'>",
+            
+            "<h3>🔍 Advanced Filter - Post-Capture Python Expressions</h3>",
+            "<div class='note'>",
+            "<b>What is the Advanced Filter?</b> The Advanced Filter evaluates Python expressions against <i>already captured</i> packets. ",
+            "It allows complex filtering based on packet fields, protocol layers, and packet metadata. Unlike BPF, ",
+            "this filter runs after capture, so all packets must be captured first.",
+            "</div>",
+            
+            "<h4>Available Packet Variables</h4>",
+            "<table>",
+            "<tr><th>Variable</th><th>Type</th><th>Description</th><th>Example Value</th></tr>",
+            "<tr><td><code>src_ip</code></td><td>string</td><td>Source IP address</td><td><code>'192.168.1.10'</code></td></tr>",
+            "<tr><td><code>dst_ip</code></td><td>string</td><td>Destination IP address</td><td><code>'10.0.0.5'</code></td></tr>",
+            "<tr><td><code>src_port</code></td><td>int</td><td>Source port number</td><td><code>54321</code></td></tr>",
+            "<tr><td><code>dst_port</code></td><td>int</td><td>Destination port number</td><td><code>80</code></td></tr>",
+            "<tr><td><code>protocol</code></td><td>string</td><td>Transport protocol</td><td><code>'TCP'</code>, <code>'UDP'</code>, <code>'ICMP'</code></td></tr>",
+            "<tr><td><code>size</code></td><td>int</td><td>Packet size in bytes</td><td><code>1500</code></td></tr>",
+            "<tr><td><code>layers</code></td><td>string</td><td>Protocol layers (comma-separated)</td><td><code>'Ethernet,IP,TCP,HTTP'</code></td></tr>",
+            "<tr><td><code>summary</code></td><td>string</td><td>Packet summary/description</td><td><code>'HTTP GET /index.html'</code></td></tr>",
+            "</table>",
+            
+            "<h4>Basic Advanced Filter Examples</h4>",
+            "<pre>",
+            "# Filter HTTPS traffic (TCP port 443)\n",
+            "protocol == 'TCP' and (dst_port == 443 or src_port == 443)\n\n",
+            "# Filter DNS queries/responses\n",
+            "'DNS' in layers\n\n",
+            "# Filter packets to/from specific host\n",
+            "src_ip == '192.168.1.10' or dst_ip == '192.168.1.10'\n\n",
+            "# Filter large packets (possible fragmentation or data transfer)\n",
+            "size >= 1500\n\n",
+            "# Filter small packets (often control packets)\n",
+            "size < 100\n\n",
+            "# Filter HTTP requests (GET, POST, etc.)\n",
+            "'HTTP' in layers and 'GET' in summary\n\n",
+            "# Filter SSH connections\n",
+            "protocol == 'TCP' and (dst_port == 22 or src_port == 22)\n",
+            "</pre>",
+            
+            "<h4>Complex Advanced Filter Examples</h4>",
+            "<pre>",
+            "# Filter packets from specific host on specific port\n",
+            "(src_ip == '10.0.0.5' or dst_ip == '10.0.0.5') and (dst_port == 22 or src_port == 22)\n\n",
+            "# Filter HTTP traffic to specific destination\n",
+            "'HTTP' in layers and dst_ip == '192.168.1.100' and dst_port == 80\n\n",
+            "# Filter large TCP packets (possible file transfers)\n",
+            "protocol == 'TCP' and size > 1000\n\n",
+            "# Filter DNS queries (small DNS packets are usually queries)\n",
+            "'DNS' in layers and size < 200\n\n",
+            "# Filter packets with multiple protocol layers\n",
+            "'HTTP' in layers and 'TCP' in layers\n\n",
+            "# Filter packets NOT from local network\n",
+            "not (src_ip.startswith('192.168.') or src_ip.startswith('10.') or src_ip.startswith('172.'))\n",
+            "</pre>",
+            
+            "<h4>String Operations</h4>",
+            "<pre>",
+            "# Check if IP is in subnet (starts with)\n",
+            "src_ip.startswith('192.168.1.')\n\n",
+            "# Check if summary contains specific text\n",
+            "'GET' in summary or 'POST' in summary\n\n",
+            "# Check protocol layers\n",
+            "'HTTP' in layers\n",
+            "'TCP' in layers and 'HTTP' in layers\n",
+            "</pre>",
+            
+            "<div class='warning'>",
+            "<b>⚠️ Important Notes:</b><br>",
+            "• Advanced filters run in a restricted Python environment for security<br>",
+            "• Keep expressions simple and avoid complex operations<br>",
+            "• All packets must be captured first (unlike BPF which filters during capture)<br>",
+            "• For heavy filtering, use BPF during capture to reduce packet volume<br>",
+            "• Advanced filters are case-sensitive for string comparisons",
+            "</div>",
+            
+            "<hr style='margin:20px 0;'>",
+            
+            "<h3>📊 When to Use Which Filter?</h3>",
+            "<table>",
+            "<tr><th>Scenario</th><th>Recommended Filter</th><th>Reason</th></tr>",
+            "<tr><td>High traffic network</td><td>BPF</td><td>Reduces capture load</td></tr>",
+            "<tr><td>Specific protocol only</td><td>BPF</td><td>Efficient at capture time</td><td></tr>",
+            "<tr><td>Complex conditions</td><td>Advanced</td><td>More flexible expressions</td></tr>",
+            "<tr><td>Filter by packet content</td><td>Advanced</td><td>Can check summary/layers</td></tr>",
+            "<tr><td>Filter by size</td><td>Advanced</td><td>Easy size comparisons</td></tr>",
+            "<tr><td>Multiple conditions</td><td>Both</td><td>BPF for basic, Advanced for complex</td></tr>",
+            "</table>",
+        ]
+
+        browser = QTextBrowser()
+        browser.setHtml(''.join(html_parts))
+        browser.setMinimumHeight(500)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(browser)
+        layout.addWidget(scroll, 1)
+
+        # Button row: copy examples and close
+        btn_layout = QHBoxLayout()
+        copy_examples = QPushButton("📋 Copy All Examples")
+        copy_examples.setToolTip("Copy all filter examples to clipboard")
+        def _copy_examples():
+            examples_text = (
+                "=== BPF Filter Examples ===\n"
+                "tcp\n"
+                "udp\n"
+                "icmp\n"
+                "host 192.168.1.10\n"
+                "src host 10.0.0.5\n"
+                "dst host 10.0.0.5\n"
+                "port 80\n"
+                "portrange 1024-2048\n"
+                "net 192.168.0.0/16\n"
+                "tcp and (dst port 80 or dst port 443)\n\n"
+                "=== Advanced Filter Examples ===\n"
+                "protocol == 'TCP' and (dst_port == 443 or src_port == 443)\n"
+                "'DNS' in layers\n"
+                "(src_ip == '10.0.0.5' or dst_ip == '10.0.0.5') and (dst_port == 22 or src_port == 22)\n"
+                "size >= 1500\n"
+                "'HTTP' in layers and 'GET' in summary\n"
+            )
+            QApplication.clipboard().setText(examples_text)
+            self.statusBar().showMessage("All filter examples copied to clipboard", 3000)
+        copy_examples.clicked.connect(_copy_examples)
+        btn_layout.addWidget(copy_examples)
+        btn_layout.addStretch(1)
+        from PyQt5.QtWidgets import QDialogButtonBox
+        close_buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        close_buttons.rejected.connect(dialog.reject)
+        btn_layout.addWidget(close_buttons)
+        layout.addLayout(btn_layout)
+
+        dialog.setLayout(layout)
+        dialog.exec_()
+
+    def apply_advanced_filter(self) -> None:
+        """Evaluate the advanced filter expression against captured packets."""
+        query = self.advanced_filter_input.text().strip()
+
+        if not query:
+            self.clear_advanced_filter()
+            self.update_advanced_filter_table()
+            return
+
+        if not self.captured_packets:
+            self.advanced_filter_status.setText("No packets captured yet.")
+            return
+
+        self.advanced_filter_table.setRowCount(0)
+
+        matching_packets = []
+        safe_globals = {"__builtins__": {}}
+
+        for index, packet in enumerate(self.captured_packets):
+            packet_env = dict(packet)
+            try:
+                result = eval(query, safe_globals, packet_env)
+            except Exception:
+                continue
+            if result:
+                matching_packets.append((index, packet))
+
+        if not matching_packets:
+            self.advanced_filter_status.setText("No packets matched the query.")
+            return
+
+        self.advanced_filter_table.setRowCount(len(matching_packets))
+        for row, (packet_index, packet) in enumerate(matching_packets):
+            color = self.get_packet_color(packet)
+
+            index_item = QTableWidgetItem(str(packet_index + 1))
+            index_item.setData(Qt.UserRole, packet_index)
+            index_item.setBackground(color)
+            self.advanced_filter_table.setItem(row, 0, index_item)
+
+            time_str = packet.get("timestamp", "")
+            if isinstance(time_str, str) and len(time_str) > 19:
+                time_str = time_str[:19]
+            time_item = QTableWidgetItem(time_str)
+            time_item.setBackground(color)
+            self.advanced_filter_table.setItem(row, 1, time_item)
+
+            src = packet.get("src_ip", "")
+            if packet.get("src_port"):
+                src += f":{packet['src_port']}"
+            src_item = QTableWidgetItem(src)
+            src_item.setBackground(color)
+            self.advanced_filter_table.setItem(row, 2, src_item)
+
+            dst = packet.get("dst_ip", "")
+            if packet.get("dst_port"):
+                dst += f":{packet['dst_port']}"
+            dst_item = QTableWidgetItem(dst)
+            dst_item.setBackground(color)
+            self.advanced_filter_table.setItem(row, 3, dst_item)
+
+            protocol = packet.get("protocol", "")
+            if not protocol and packet.get("layers"):
+                protocol = packet["layers"][-1]
+            proto_item = QTableWidgetItem(protocol)
+            proto_item.setBackground(color)
+            self.advanced_filter_table.setItem(row, 4, proto_item)
+
+            length_item = QTableWidgetItem(str(packet.get("size", 0)))
+            length_item.setBackground(color)
+            self.advanced_filter_table.setItem(row, 5, length_item)
+
+            summary_item = QTableWidgetItem(packet.get("summary", ""))
+            summary_item.setBackground(color)
+            self.advanced_filter_table.setItem(row, 6, summary_item)
+
+        self.advanced_filter_status.setText(f"Showing {len(matching_packets)} matching packets.")
+
+    def show_advanced_filter_help(self) -> None:
+        """Show comprehensive help dialog for the advanced filter syntax."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Advanced Filter - Complete Reference")
+        dialog.resize(750, 650)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(15, 15, 15, 15)
+
+        title = QLabel("Advanced Filter - Python Expression Guide")
+        title.setStyleSheet("font-weight: bold; font-size: 16pt; color: #2196F3;")
+        layout.addWidget(title)
+
+        html_parts = [
+            "<style>",
+            "body { font-family: Arial, sans-serif; line-height: 1.6; }",
+            "h3 { color:#1976D2; border-bottom:2px solid #E3F2FD; padding-bottom:5px; margin-top:20px; }",
+            "h4 { color:#424242; margin-top:15px; }",
+            "pre { background:#f5f5f5; padding:12px; border:1px solid #ddd; border-radius:4px; font-size:10pt; overflow-x:auto; }",
+            ".note { background:#E3F2FD; padding:10px; border-left:4px solid #2196F3; margin:10px 0; }",
+            ".warning { background:#FFF3CD; padding:10px; border-left:4px solid #FFC107; margin:10px 0; }",
+            ".tip { background:#E8F5E9; padding:10px; border-left:4px solid #4CAF50; margin:10px 0; }",
+            "code { background:#f0f0f0; padding:2px 6px; border-radius:3px; font-family:monospace; }",
+            "table { border-collapse:collapse; width:100%; margin:10px 0; }",
+            "td, th { border:1px solid #ddd; padding:8px; text-align:left; }",
+            "th { background:#2196F3; color:white; }",
+            "</style>",
+            
+            "<div class='note'>",
+            "<b>What is the Advanced Filter?</b> The Advanced Filter evaluates Python expressions against each captured packet. ",
+            "It runs <i>after</i> packets are captured, allowing you to filter based on packet fields, protocol layers, and metadata. ",
+            "This is more flexible than BPF filters but requires all packets to be captured first.",
+            "</div>",
+            
+            "<h3>📋 Available Packet Variables</h3>",
+            "<table>",
+            "<tr><th>Variable</th><th>Type</th><th>Description</th><th>Example</th></tr>",
+            "<tr><td><code>src_ip</code></td><td>string</td><td>Source IP address</td><td><code>'192.168.1.10'</code></td></tr>",
+            "<tr><td><code>dst_ip</code></td><td>string</td><td>Destination IP address</td><td><code>'10.0.0.5'</code></td></tr>",
+            "<tr><td><code>src_port</code></td><td>int</td><td>Source port number (0 if not applicable)</td><td><code>54321</code></td></tr>",
+            "<tr><td><code>dst_port</code></td><td>int</td><td>Destination port number (0 if not applicable)</td><td><code>80</code></td></tr>",
+            "<tr><td><code>protocol</code></td><td>string</td><td>Transport protocol name</td><td><code>'TCP'</code>, <code>'UDP'</code>, <code>'ICMP'</code></td></tr>",
+            "<tr><td><code>size</code></td><td>int</td><td>Packet size in bytes</td><td><code>1500</code></td></tr>",
+            "<tr><td><code>layers</code></td><td>string</td><td>Comma-separated protocol layers</td><td><code>'Ethernet,IP,TCP,HTTP'</code></td></tr>",
+            "<tr><td><code>summary</code></td><td>string</td><td>Packet summary/description</td><td><code>'HTTP GET /index.html'</code></td></tr>",
+            "</table>",
+            
+            "<h3>🔧 Basic Filter Examples</h3>",
+            "<pre>",
+            "# Filter HTTPS traffic (TCP port 443)\n",
+            "protocol == 'TCP' and (dst_port == 443 or src_port == 443)\n\n",
+            "# Filter HTTP traffic (TCP port 80)\n",
+            "protocol == 'TCP' and (dst_port == 80 or src_port == 80)\n\n",
+            "# Filter DNS queries/responses\n",
+            "'DNS' in layers\n\n",
+            "# Filter SSH connections (port 22)\n",
+            "protocol == 'TCP' and (dst_port == 22 or src_port == 22)\n\n",
+            "# Filter packets to/from specific IP\n",
+            "src_ip == '192.168.1.10' or dst_ip == '192.168.1.10'\n\n",
+            "# Filter large packets\n",
+            "size >= 1500\n\n",
+            "# Filter small packets\n",
+            "size < 100\n",
+            "</pre>",
+            
+            "<h3>🎯 Complex Filter Examples</h3>",
+            "<pre>",
+            "# Filter HTTP requests (GET, POST, etc.)\n",
+            "'HTTP' in layers and ('GET' in summary or 'POST' in summary)\n\n",
+            "# Filter packets from specific host on specific port\n",
+            "(src_ip == '10.0.0.5' or dst_ip == '10.0.0.5') and (dst_port == 22 or src_port == 22)\n\n",
+            "# Filter HTTP traffic to specific destination\n",
+            "'HTTP' in layers and dst_ip == '192.168.1.100' and dst_port == 80\n\n",
+            "# Filter large TCP packets (possible file transfers)\n",
+            "protocol == 'TCP' and size > 1000\n\n",
+            "# Filter DNS queries (small DNS packets are usually queries)\n",
+            "'DNS' in layers and size < 200\n\n",
+            "# Filter packets with multiple protocol layers\n",
+            "'HTTP' in layers and 'TCP' in layers\n\n",
+            "# Filter packets NOT from local network\n",
+            "not (src_ip.startswith('192.168.') or src_ip.startswith('10.') or src_ip.startswith('172.'))\n\n",
+            "# Filter packets in specific port range\n",
+            "dst_port >= 8000 and dst_port <= 9000\n",
+            "</pre>",
+            
+            "<h3>🔤 String Operations</h3>",
+            "<pre>",
+            "# Check if IP is in subnet\n",
+            "src_ip.startswith('192.168.1.')\n\n",
+            "# Check if summary contains specific text\n",
+            "'GET' in summary or 'POST' in summary\n",
+            "'404' in summary  # HTTP 404 errors\n\n",
+            "# Check protocol layers\n",
+            "'HTTP' in layers\n",
+            "'TCP' in layers and 'HTTP' in layers\n",
+            "'DNS' in layers and 'UDP' in layers\n",
+            "</pre>",
+            
+            "<h3>⚙️ Logical Operators</h3>",
+            "<pre>",
+            "# AND - both conditions must be true\n",
+            "protocol == 'TCP' and dst_port == 443\n\n",
+            "# OR - either condition can be true\n",
+            "src_ip == '10.0.0.5' or dst_ip == '10.0.0.5'\n\n",
+            "# NOT - exclude matching packets\n",
+            "not (protocol == 'ICMP')\n",
+            "not ('DNS' in layers)\n\n",
+            "# Parentheses for grouping\n",
+            "(src_ip == '10.0.0.5' or dst_ip == '10.0.0.5') and (dst_port == 22 or src_port == 22)\n",
+            "</pre>",
+            
+            "<h3>📊 Comparison Operators</h3>",
+            "<pre>",
+            "# Equality\n",
+            "protocol == 'TCP'\n",
+            "dst_port == 80\n\n",
+            "# Inequality\n",
+            "protocol != 'UDP'\n",
+            "size != 0\n\n",
+            "# Greater than / Less than\n",
+            "size >= 1500  # Large packets\n",
+            "size < 100    # Small packets\n",
+            "dst_port > 1024  # Non-privileged ports\n",
+            "</pre>",
+            
+            "<div class='tip'>",
+            "<b>💡 Tips for Effective Filtering:</b><br>",
+            "• Start with simple filters and gradually add complexity<br>",
+            "• Use parentheses to group conditions clearly<br>",
+            "• Test filters on a small capture first<br>",
+            "• Combine with BPF filters for better performance<br>",
+            "• Use <code>in</code> operator for checking layers and summary text",
+            "</div>",
+            
+            "<div class='warning'>",
+            "<b>⚠️ Important Notes:</b><br>",
+            "• Advanced filters run in a restricted Python environment for security<br>",
+            "• Keep expressions simple - avoid complex operations<br>",
+            "• All packets must be captured first (unlike BPF)<br>",
+            "• For heavy filtering, use BPF during capture to reduce packet volume<br>",
+            "• String comparisons are case-sensitive<br>",
+            "• If no packets match, try a broader query or capture without a BPF filter first",
+            "</div>",
+        ]
+
+        browser = QTextBrowser()
+        browser.setHtml(''.join(html_parts))
+        browser.setMinimumHeight(450)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(browser)
+        layout.addWidget(scroll, 1)
+
+        # Buttons
+        btn_layout = QHBoxLayout()
+        copy_btn = QPushButton("📋 Copy Examples")
+        copy_btn.setToolTip("Copy filter examples to clipboard")
+        def _copy_examples():
+            examples_text = (
+                "=== Advanced Filter Examples ===\n"
+                "protocol == 'TCP' and (dst_port == 443 or src_port == 443)\n"
+                "'DNS' in layers\n"
+                "src_ip == '192.168.1.10' or dst_ip == '192.168.1.10'\n"
+                "size >= 1500\n"
+                "'HTTP' in layers and 'GET' in summary\n"
+                "(src_ip == '10.0.0.5' or dst_ip == '10.0.0.5') and (dst_port == 22 or src_port == 22)\n"
+                "'HTTP' in layers and dst_ip == '192.168.1.100' and dst_port == 80\n"
+                "protocol == 'TCP' and size > 1000\n"
+                "'DNS' in layers and size < 200\n"
+            )
+            QApplication.clipboard().setText(examples_text)
+            self.statusBar().showMessage("Advanced filter examples copied to clipboard", 3000)
+        copy_btn.clicked.connect(_copy_examples)
+        btn_layout.addWidget(copy_btn)
+        btn_layout.addStretch(1)
+        from PyQt5.QtWidgets import QDialogButtonBox
+        close_buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        close_buttons.rejected.connect(dialog.reject)
+        btn_layout.addWidget(close_buttons)
+        layout.addLayout(btn_layout)
+
+        dialog.setLayout(layout)
+        dialog.exec_()
+
+    def clear_advanced_filter(self) -> None:
+        """Reset the advanced filter UI components."""
+        self.advanced_filter_input.clear()
+        self.advanced_filter_table.setRowCount(0)
+        self.advanced_filter_status.setText("Advanced filter cleared.")
+
+    def on_advanced_filter_selection(self) -> None:
+        """Sync the main packet view when an advanced filter row is selected."""
+        selected = self.advanced_filter_table.selectedIndexes()
+        if not selected:
+            return
+
+        row = selected[0].row()
+        index_item = self.advanced_filter_table.item(row, 0)
+        if not index_item:
+            return
+
+        packet_index = index_item.data(Qt.UserRole)
+        if packet_index is None:
+            try:
+                packet_index = int(index_item.text()) - 1
+            except (ValueError, TypeError):
+                return
+
+        if 0 <= packet_index < len(self.captured_packets):
+            self.packet_table.selectRow(packet_index)
+            self.display_packet_details(self.captured_packets[packet_index])
+
+    def load_ui_state(self) -> None:
+        """Placeholder for restoring persisted UI state."""
+        # Original implementation relied on QSettings; omitted in this build.
+        pass
     def on_tab_changed(self, index):
         """Handle tab change in the secondary tabs"""
         # If the Database Status tab is selected, update the status
@@ -2405,7 +3750,7 @@ class DesktopApp(QMainWindow):
             # Show menu
             cursor_pos = QCursor.pos()
             port_menu.exec_(cursor_pos)
-    
+
     def filter_by_protocol(self, row):
         """Filter by protocol"""
         if row < len(self.captured_packets):
@@ -2422,7 +3767,44 @@ class DesktopApp(QMainWindow):
         """Set filter text and apply"""
         self.filter_text.setText(filter_text)
         self.apply_filter()
-    
+
+    def apply_filter(self):
+        """Apply the current filter to the displayed packets"""
+        filter_text = self.filter_text.text().strip().lower()
+        if not filter_text:
+            # No filter - show all packets
+            for row in range(self.packet_table.rowCount()):
+                self.packet_table.setRowHidden(row, False)
+            return
+
+        # Apply filter - hide packets that don't match
+        for row in range(self.packet_table.rowCount()):
+            if row < len(self.captured_packets):
+                packet = self.captured_packets[row]
+                # Simple text-based filtering
+                packet_text = " ".join([
+                    str(packet.get("protocol", "")),
+                    str(packet.get("src_ip", "")),
+                    str(packet.get("dst_ip", "")),
+                    str(packet.get("src_port", "")),
+                    str(packet.get("dst_port", "")),
+                    str(packet.get("summary", ""))
+                ]).lower()
+
+                # Show row if filter text is found in packet text
+                show = filter_text in packet_text
+                self.packet_table.setRowHidden(row, not show)
+            else:
+                # Hide row if no corresponding packet
+                self.packet_table.setRowHidden(row, True)
+
+    def clear_filter(self):
+        """Clear the active filter and show every packet again."""
+        self.filter_text.clear()
+        for row in range(self.packet_table.rowCount()):
+            self.packet_table.setRowHidden(row, False)
+        self.statusBar().showMessage(f"Filter cleared. Showing all {self.packet_table.rowCount()} packets.")
+
     def display_packet_details(self, packet):
         """Display detailed information about the selected packet"""
         # Clear previous details
@@ -2430,23 +3812,48 @@ class DesktopApp(QMainWindow):
         self.hex_view.clear()
         self.raw_view.clear()
         self.summary_view.clear()
-        
+
         # Display protocol tree
         self.populate_protocol_tree(packet)
-        
+
         # Display hex dump
         if "hex_dump" in packet:
             self.hex_view.setText(packet["hex_dump"])
-        
+
         # Display raw data
         if "http_data" in packet:
             self.raw_view.setText(packet["http_data"])
         elif "payload" in packet:
             self.raw_view.setText(packet["payload"])
-        
+
         # Display summary information
         self.populate_summary_view(packet)
-    
+
+    def populate_summary_view(self, packet):
+        """Populate the summary view with packet details"""
+        summary_text = f"""Packet Summary:
+Frame Number: {packet.get('frame_number', 'N/A')}
+Timestamp: {packet.get('timestamp', 'N/A')}
+Size: {packet.get('size', 0)} bytes
+
+Ethernet:
+  Source MAC: {packet.get('mac_src', 'N/A')}
+  Destination MAC: {packet.get('mac_dst', 'N/A')}
+  EtherType: {packet.get('eth_type', 'N/A')}
+
+Network:
+  Source IP: {packet.get('src_ip', 'N/A')}
+  Destination IP: {packet.get('dst_ip', 'N/A')}
+  Protocol: {packet.get('protocol', 'N/A')}
+
+Transport:
+  Source Port: {packet.get('src_port', 'N/A')}
+  Destination Port: {packet.get('dst_port', 'N/A')}
+
+Layers: {', '.join(packet.get('layers', []))}
+"""
+        self.summary_view.setText(summary_text)
+
     def populate_protocol_tree(self, packet):
         """Populate the protocol tree with packet details"""
         # Add frame item (top level)
@@ -2456,12 +3863,12 @@ class DesktopApp(QMainWindow):
         frame_item.setExpanded(True)
         frame_item.setBackground(0, QColor("#e6f2ff"))  # Light blue background
         frame_item.setBackground(1, QColor("#e6f2ff"))
-        
+
         # Add timestamp
         timestamp_item = QTreeWidgetItem(frame_item)
         timestamp_item.setText(0, "Timestamp")
         timestamp_item.setText(1, packet.get("timestamp", ""))
-        
+
         # Add protocol layers with color coding
         if "protocol_tree" in packet:
             for layer in packet["protocol_tree"]:
@@ -2470,7 +3877,7 @@ class DesktopApp(QMainWindow):
                 layer_item.setText(0, layer_name)
                 layer_item.setText(1, "")
                 layer_item.setExpanded(True)
-                
+
                 # Color code by layer type
                 if layer_name == "Ethernet":
                     layer_item.setBackground(0, QColor("#f0f0ff"))  # Very light blue
@@ -2484,2261 +3891,50 @@ class DesktopApp(QMainWindow):
                 elif layer_name in ["HTTP", "DNS", "TLS"]:
                     layer_item.setBackground(0, QColor("#fffff0"))  # Very light yellow
                     layer_item.setBackground(1, QColor("#fffff0"))
-                
+
                 # Add fields for this layer
                 for field_name, field_value in layer.get("fields", {}).items():
                     field_item = QTreeWidgetItem(layer_item)
                     field_item.setText(0, field_name)
                     field_item.setText(1, str(field_value))
-                    
-                    # Highlight important fields
-                    if field_name in ["src", "dst", "sport", "dport", "flags", "type", "code"]:
-                        font = field_item.font(0)
-                        font.setBold(True)
-                        field_item.setFont(0, font)
-        else:
-            # Fallback if protocol_tree is not available
-            for key, value in packet.items():
-                if key not in ["hex_dump", "protocol_tree", "summary", "layers", "packet_data"] and not isinstance(value, (dict, list)):
-                    item = QTreeWidgetItem(self.packet_tree)
-                    item.setText(0, key)
-                    item.setText(1, str(value))
-    
-    def populate_summary_view(self, packet):
-        """Populate the summary view with packet details"""
-        # Create HTML summary
-        html = "<html><body style='font-family: Arial, sans-serif;'>"
-        
-        # Add packet header
-        html += f"<h2 style='color: #0078d7;'>Packet #{packet.get('frame_number', 1)}</h2>"
-        
-        # Add packet summary
-        html += f"<p style='font-size: 14px;'><b>Summary:</b> {packet.get('summary', 'N/A')}</p>"
-        
-        # Add timestamp
-        html += f"<p><b>Time:</b> {packet.get('timestamp', 'N/A')}</p>"
-        
-        # Add size
-        html += f"<p><b>Size:</b> {packet.get('size', 0)} bytes</p>"
-        
-        # Add protocol stack
-        if "layers" in packet:
-            html += "<p><b>Protocol Stack:</b> "
-            html += " &rarr; ".join(packet["layers"])
-            html += "</p>"
-        
-        # Add source and destination
-        html += "<h3 style='color: #0078d7; margin-top: 20px;'>Addressing</h3>"
-        
-        if "mac_src" in packet and "mac_dst" in packet:
-            html += f"<p><b>MAC Source:</b> {packet.get('mac_src', 'N/A')}</p>"
-            html += f"<p><b>MAC Destination:</b> {packet.get('mac_dst', 'N/A')}</p>"
-        
-        if "src_ip" in packet and "dst_ip" in packet:
-            html += f"<p><b>IP Source:</b> {packet.get('src_ip', 'N/A')}"
-            if "src_port" in packet and packet["src_port"]:
-                html += f":{packet['src_port']}"
-            html += "</p>"
-            
-            html += f"<p><b>IP Destination:</b> {packet.get('dst_ip', 'N/A')}"
-            if "dst_port" in packet and packet["dst_port"]:
-                html += f":{packet['dst_port']}"
-            html += "</p>"
-        
-        # Add protocol-specific details
-        protocol = packet.get("protocol", "")
-        if protocol:
-            html += f"<h3 style='color: #0078d7; margin-top: 20px;'>{protocol} Details</h3>"
-            
-            if protocol == "TCP":
-                html += "<table border='0' cellpadding='3' style='border-collapse: collapse; width: 100%;'>"
-                html += "<tr style='background-color: #f0f0f0;'><th style='text-align: left;'>Field</th><th style='text-align: left;'>Value</th></tr>"
-                
-                if "seq" in packet:
-                    html += f"<tr><td><b>Sequence Number:</b></td><td>{packet.get('seq', 'N/A')}</td></tr>"
-                if "ack" in packet:
-                    html += f"<tr><td><b>Acknowledgment Number:</b></td><td>{packet.get('ack', 'N/A')}</td></tr>"
-                if "window" in packet:
-                    html += f"<tr><td><b>Window Size:</b></td><td>{packet.get('window', 'N/A')}</td></tr>"
-                if "tcp_flags" in packet:
-                    html += f"<tr><td><b>Flags:</b></td><td>{' '.join(packet.get('tcp_flags', []))}</td></tr>"
-                
-                html += "</table>"
-            
-            elif protocol == "UDP":
-                html += "<table border='0' cellpadding='3' style='border-collapse: collapse; width: 100%;'>"
-                html += "<tr style='background-color: #f0f0f0;'><th style='text-align: left;'>Field</th><th style='text-align: left;'>Value</th></tr>"
-                
-                if "length" in packet:
-                    html += f"<tr><td><b>Length:</b></td><td>{packet.get('length', 'N/A')}</td></tr>"
-                
-                html += "</table>"
-            
-            elif protocol == "ICMP":
-                html += "<table border='0' cellpadding='3' style='border-collapse: collapse; width: 100%;'>"
-                html += "<tr style='background-color: #f0f0f0;'><th style='text-align: left;'>Field</th><th style='text-align: left;'>Value</th></tr>"
-                
-                if "icmp_type" in packet:
-                    icmp_type = packet.get('icmp_type', 'N/A')
-                    icmp_type_name = {
-                        0: "Echo Reply",
-                        3: "Destination Unreachable",
-                        5: "Redirect",
-                        8: "Echo Request",
-                        11: "Time Exceeded"
-                    }.get(icmp_type, f"Type {icmp_type}")
-                    
-                    html += f"<tr><td><b>Type:</b></td><td>{icmp_type} ({icmp_type_name})</td></tr>"
-                
-                if "icmp_code" in packet:
-                    html += f"<tr><td><b>Code:</b></td><td>{packet.get('icmp_code', 'N/A')}</td></tr>"
-                
-                html += "</table>"
-            
-            elif protocol == "ARP":
-                html += "<table border='0' cellpadding='3' style='border-collapse: collapse; width: 100%;'>"
-                html += "<tr style='background-color: #f0f0f0;'><th style='text-align: left;'>Field</th><th style='text-align: left;'>Value</th></tr>"
-                
-                if "arp_op" in packet:
-                    arp_op = packet.get('arp_op', 'N/A')
-                    arp_op_name = "Request" if arp_op == 1 else "Reply" if arp_op == 2 else f"Operation {arp_op}"
-                    html += f"<tr><td><b>Operation:</b></td><td>{arp_op} ({arp_op_name})</td></tr>"
-                
-                if "arp_hwsrc" in packet:
-                    html += f"<tr><td><b>Hardware Source:</b></td><td>{packet.get('arp_hwsrc', 'N/A')}</td></tr>"
-                if "arp_hwdst" in packet:
-                    html += f"<tr><td><b>Hardware Destination:</b></td><td>{packet.get('arp_hwdst', 'N/A')}</td></tr>"
-                if "arp_psrc" in packet:
-                    html += f"<tr><td><b>Protocol Source:</b></td><td>{packet.get('arp_psrc', 'N/A')}</td></tr>"
-                if "arp_pdst" in packet:
-                    html += f"<tr><td><b>Protocol Destination:</b></td><td>{packet.get('arp_pdst', 'N/A')}</td></tr>"
-                
-                html += "</table>"
-        
-        # Add application layer details
-        if "HTTP" in packet.get("layers", []) and "http_data" in packet:
-            html += "<h3 style='color: #0078d7; margin-top: 20px;'>HTTP Details</h3>"
-            html += f"<pre style='background-color: #f8f8f8; padding: 10px; border: 1px solid #ddd; overflow: auto;'>{packet['http_data']}</pre>"
-        
-        if "DNS" in packet.get("layers", []) and "dns" in packet:
-            html += "<h3 style='color: #0078d7; margin-top: 20px;'>DNS Details</h3>"
-            dns = packet["dns"]
-            
-            html += "<table border='0' cellpadding='3' style='border-collapse: collapse; width: 100%;'>"
-            html += "<tr style='background-color: #f0f0f0;'><th style='text-align: left;'>Field</th><th style='text-align: left;'>Value</th></tr>"
-            
-            html += f"<tr><td><b>Transaction ID:</b></td><td>{dns.get('id', 'N/A')}</td></tr>"
-            html += f"<tr><td><b>Type:</b></td><td>{dns.get('query_type', 'N/A')}</td></tr>"
-            
-            if "query_name" in dns:
-                html += f"<tr><td><b>Query Name:</b></td><td>{dns.get('query_name', 'N/A')}</td></tr>"
-            
-            html += "</table>"
-        
-        html += "</body></html>"
-        
-        # Set HTML content
-        self.summary_view.setHtml(html)
-    
-    def update_status(self, stats):
-        """Update status display with capture statistics"""
-        try:
-            # Update status label with color coding
-            if self.capture_thread and self.capture_thread.isRunning():
-                self.status_label.setText("Running")
-                self.status_label.setStyleSheet("color: #388e3c; font-weight: bold;")  # Green for running
-            else:
-                self.status_label.setText("Stopped")
-                self.status_label.setStyleSheet("color: #d32f2f; font-weight: bold;")  # Red for stopped
-            
-            # Update packet statistics
-            packets_captured = stats.get("packets_captured", 0)
-            self.packets_label.setText(f"Packets: {packets_captured:,}")
-            
-            # Update bytes captured
-            bytes_captured = stats.get("bytes_captured", 0)
-            if bytes_captured < 1024:
-                self.bytes_label.setText(f"Bytes: {bytes_captured:,} B")
-            elif bytes_captured < 1024 * 1024:
-                self.bytes_label.setText(f"Bytes: {bytes_captured / 1024:.1f} KB")
-            else:
-                self.bytes_label.setText(f"Bytes: {bytes_captured / (1024 * 1024):.1f} MB")
-            
-            # Update rate
-            if stats.get("start_time"):
-                elapsed = time.time() - stats["start_time"]
-                if elapsed > 0:
-                    rate = stats.get("packets_captured", 0) / elapsed
-                    self.rate_label.setText(f"Rate: {rate:.1f}/s")
-            
-            # Update protocol counters from our internal stats
-            # (We maintain these ourselves in update_protocol_stats)
-            self.tcp_label.setText(f"TCP: {self.protocol_stats['tcp_packets']:,}")
-            self.udp_label.setText(f"UDP: {self.protocol_stats['udp_packets']:,}")
-            self.icmp_label.setText(f"ICMP: {self.protocol_stats['icmp_packets']:,}")
-            self.other_label.setText(f"Other: {self.protocol_stats['other_packets']:,}")
-            
-            # Update status bar
-            if stats.get("start_time"):
-                elapsed = time.time() - stats["start_time"]
-                elapsed_str = time.strftime("%H:%M:%S", time.gmtime(elapsed))
-                
-                # Calculate packet rate for last second
-                try:
-                    if hasattr(self, 'last_packet_count') and hasattr(self, 'last_update_time'):
-                        time_diff = time.time() - self.last_update_time
-                        if time_diff > 0:
-                            recent_rate = (packets_captured - self.last_packet_count) / time_diff
-                            status_msg = f"Running for {elapsed_str} | Current rate: {recent_rate:.1f} packets/sec"
-                        else:
-                            status_msg = f"Running for {elapsed_str}"
-                    else:
-                        status_msg = f"Running for {elapsed_str}"
-                except Exception as e:
-                    # Fallback if there's any error in formatting
-                    status_msg = f"Running for {elapsed_str}"
-                    logger.error(f"Error formatting status message: {e}")
-                
-                self.statusBar().showMessage(status_msg)
-                
-                # Store current values for next update
-                self.last_packet_count = packets_captured
-                self.last_update_time = time.time()
-        
-        except Exception as e:
-            logger.error(f"Error updating status: {e}")
-    
+
     def update_ui(self):
-        """Update UI elements periodically"""
-        # Update packet count in title bar
+        """Periodic UI refresh for titles, tabs, and resource info."""
         packet_count = len(self.captured_packets)
         queue_size = self.packet_queue.qsize()
-        
+
         if queue_size > 0:
             self.setWindowTitle(f"PyGuard Desktop - {packet_count} packets captured ({queue_size} in queue)")
         else:
             self.setWindowTitle(f"PyGuard Desktop - {packet_count} packets captured")
-        
-        # Update database status if the tab is visible
-        if self.secondary_tabs.currentWidget() == self.db_status_view:
+
+        if (
+            hasattr(self, "secondary_tabs")
+            and self.secondary_tabs.currentWidget() == self.db_status_view
+        ):
             self.update_db_status()
-        
-        # Update status bar with memory usage
+
         try:
             import psutil
+
             process = psutil.Process()
             memory_info = process.memory_info()
             memory_mb = memory_info.rss / (1024 * 1024)
-            
-            # Update status message with memory usage
+
             current_msg = self.statusBar().currentMessage()
             if current_msg:
                 self.statusBar().showMessage(f"{current_msg} | Memory: {memory_mb:.1f} MB")
             else:
                 self.statusBar().showMessage(f"Memory: {memory_mb:.1f} MB")
-        except:
+        except Exception:
             pass
-            
-    def update_db_status(self):
-        """Update database status information"""
-        try:
-            import yaml
-            import psycopg2
-            
-            # Load configuration
-            config_path = "config.yaml"
-            try:
-                with open(config_path, 'r') as f:
-                    config = yaml.safe_load(f)
-            except Exception as e:
-                self.db_status_view.setHtml(f"""
-                <h2>Database Status</h2>
-                <p style="color: red;">Error loading configuration: {e}</p>
-                <p>Could not load configuration from {config_path}</p>
-                <p>The desktop application does not directly store data in the database.</p>
-                <p>To store captured data in PostgreSQL, use the main PyGuard application:</p>
-                <pre>python -m pyguard.main</pre>
-                """)
-                return
-                
-            # Get database configuration
-            db_config = config.get('database', {})
-            if not db_config or not db_config.get('enabled', False):
-                self.db_status_view.setHtml(f"""
-                <h2>Database Status</h2>
-                <p style="color: orange;">Database storage is disabled in configuration.</p>
-                <p>The desktop application does not directly store data in the database.</p>
-                <p>To enable database storage:</p>
-                <ol>
-                    <li>Edit config.yaml</li>
-                    <li>Set database.enabled to true</li>
-                    <li>Configure database connection parameters</li>
-                    <li>Run the main PyGuard application: <pre>python -m pyguard.main</pre></li>
-                </ol>
-                """)
-                return
-                
-            # Try to connect to the database
-            try:
-                conn = psycopg2.connect(
-                    host=db_config['host'],
-                    port=db_config['port'],
-                    dbname=db_config['name'],
-                    user=db_config['user'],
-                    password=db_config['password'],
-                    connect_timeout=3  # Short timeout to avoid UI freezing
-                )
-                
-                # Create a cursor
-                cursor = conn.cursor()
-                
-                # Check database connection
-                cursor.execute("SELECT version();")
-                version = cursor.fetchone()[0]
-                
-                # Get table information
-                cursor.execute("""
-                    SELECT table_name 
-                    FROM information_schema.tables 
-                    WHERE table_schema = 'public'
-                """)
-                tables = cursor.fetchall()
-                
-                # Get packet count
-                packet_count = 0
-                flow_count = 0
-                
-                for table in tables:
-                    table_name = table[0]
-                    if table_name == 'packets':
-                        cursor.execute("SELECT COUNT(*) FROM packets")
-                        packet_count = cursor.fetchone()[0]
-                    elif table_name == 'flows':
-                        cursor.execute("SELECT COUNT(*) FROM flows")
-                        flow_count = cursor.fetchone()[0]
-                
-                # Get the most recent packets
-                recent_packets = []
-                if 'packets' in [t[0] for t in tables]:
-                    cursor.execute("""
-                        SELECT timestamp, src_ip, dst_ip, protocol_name, src_port, dst_port
-                        FROM packets
-                        ORDER BY timestamp DESC
-                        LIMIT 10
-                    """)
-                    recent_packets = cursor.fetchall()
-                
-                # Close cursor and connection
-                cursor.close()
-                conn.close()
-                
-                # Build HTML status
-                html = f"""
-                <h2>Database Status</h2>
-                <p style="color: green;">✓ Connected to PostgreSQL</p>
-                <p><b>Version:</b> {version}</p>
-                <p><b>Connection:</b> {db_config['host']}:{db_config['port']}/{db_config['name']}</p>
-                <p><b>Tables:</b> {', '.join([t[0] for t in tables])}</p>
-                <p><b>Packet Count:</b> {packet_count:,}</p>
-                <p><b>Flow Count:</b> {flow_count:,}</p>
-                
-                <h3>Note</h3>
-                <p>The desktop application does not directly store data in the database.</p>
-                <p>To store captured data in PostgreSQL, use the main PyGuard application:</p>
-                <pre>python -m pyguard.main</pre>
-                """
-                
-                if recent_packets:
-                    html += """
-                    <h3>Recent Packets in Database</h3>
-                    <table border="1" cellpadding="5" style="border-collapse: collapse; width: 100%;">
-                        <tr style="background-color: #f0f0f0;">
-                            <th>Timestamp</th>
-                            <th>Source</th>
-                            <th>Destination</th>
-                            <th>Protocol</th>
-                        </tr>
-                    """
-                    
-                    for packet in recent_packets:
-                        timestamp, src_ip, dst_ip, protocol, src_port, dst_port = packet
-                        source = f"{src_ip}:{src_port}" if src_port else src_ip
-                        destination = f"{dst_ip}:{dst_port}" if dst_port else dst_ip
-                        html += f"""
-                        <tr>
-                            <td>{timestamp}</td>
-                            <td>{source}</td>
-                            <td>{destination}</td>
-                            <td>{protocol}</td>
-                        </tr>
-                        """
-                    
-                    html += "</table>"
-                
-                self.db_status_view.setHtml(html)
-                
-            except Exception as e:
-                self.db_status_view.setHtml(f"""
-                <h2>Database Status</h2>
-                <p style="color: red;">✗ Database Connection Error</p>
-                <p><b>Error:</b> {e}</p>
-                <p><b>Connection:</b> {db_config.get('host', 'N/A')}:{db_config.get('port', 'N/A')}/{db_config.get('name', 'N/A')}</p>
-                
-                <h3>Troubleshooting</h3>
-                <ol>
-                    <li>Verify PostgreSQL is running</li>
-                    <li>Check connection parameters in config.yaml</li>
-                    <li>Ensure the database exists</li>
-                    <li>Run the database setup script:
-                        <pre>python scripts/setup_database.py</pre>
-                    </li>
-                    <li>Check database status:
-                        <pre>python check_database.py</pre>
-                    </li>
-                </ol>
-                
-                <h3>Note</h3>
-                <p>The desktop application does not directly store data in the database.</p>
-                <p>To store captured data in PostgreSQL, use the main PyGuard application:</p>
-                <pre>python -m pyguard.main</pre>
-                """)
-                
-        except Exception as e:
-            self.db_status_view.setHtml(f"""
-            <h2>Database Status</h2>
-            <p style="color: red;">Error checking database status: {e}</p>
-            
-            <h3>Note</h3>
-            <p>The desktop application does not directly store data in the database.</p>
-            <p>To store captured data in PostgreSQL, use the main PyGuard application:</p>
-            <pre>python -m pyguard.main</pre>
-            """)
-    
-    def apply_filter(self):
-        """Apply filter to the packet list"""
-        filter_text = self.filter_text.text().strip().lower()
-        if not filter_text:
-            # If filter is empty, show all packets
-            for row in range(self.packet_table.rowCount()):
-                self.packet_table.setRowHidden(row, False)
-            return
-        
-        # Hide rows that don't match the filter
-        for row in range(self.packet_table.rowCount()):
-            match = False
-            
-            # Check each column for a match
-            for col in range(1, 7):  # Skip the packet number column
-                cell_text = self.packet_table.item(row, col).text().lower()
-                if filter_text in cell_text:
-                    match = True
-                    break
-            
-            # Hide or show the row based on the match
-            self.packet_table.setRowHidden(row, not match)
-    
-    def clear_filter(self):
-        """Clear the filter and show all packets"""
-        self.filter_text.clear()
-        for row in range(self.packet_table.rowCount()):
-            self.packet_table.setRowHidden(row, False)
-        
-        # Update status bar
-        self.statusBar().showMessage(f"Filter cleared. Showing all {self.packet_table.rowCount()} packets.")
-        
-    def apply_advanced_filter(self):
-        """Apply advanced filter query to find specific packets"""
-        try:
-            query = self.advanced_filter_input.text().strip()
-            if not query:
-                self.clear_advanced_filter()
-                return
-                
-            if not self.captured_packets:
-                self.advanced_filter_status.setText("No packets captured yet.")
-                return
-                
-            # Clear the results table
-            self.advanced_filter_table.setRowCount(0)
-            
-            # Parse and apply the query
-            matching_packets = []
-            
-            # Simple query parser
-            try:
-                # Count matches
-                match_count = 0
-                
-                for i, packet in enumerate(self.captured_packets):
-                    # Create a safe local environment with packet data
-                    packet_env = packet.copy()
-                    
-                    # Evaluate the query against the packet
-                    try:
-                        # Use eval with restricted globals
-                        result = eval(query, {"__builtins__": {}}, packet_env)
-                        if result:
-                            matching_packets.append((i, packet))
-                            match_count += 1
-                    except Exception as e:
-                        # Skip packets that cause evaluation errors
-                        continue
-                
-                # Display matching packets
-                self.advanced_filter_table.setRowCount(len(matching_packets))
-                
-                for row, (packet_index, packet) in enumerate(matching_packets):
-                    # Get color for this packet
-                    bg_color = self.get_packet_color(packet)
-                    
-                    # Packet number
-                    item = QTableWidgetItem(str(packet_index + 1))
-                    item.setData(Qt.UserRole, packet_index)  # Store original index
-                    item.setBackground(bg_color)
-                    self.advanced_filter_table.setItem(row, 0, item)
-                    
-                    # Time
-                    time_str = packet.get("timestamp", "")
-                    if isinstance(time_str, str) and len(time_str) > 19:
-                        time_str = time_str[:19]  # Truncate microseconds
-                    item = QTableWidgetItem(time_str)
-                    item.setBackground(bg_color)
-                    self.advanced_filter_table.setItem(row, 1, item)
-                    
-                    # Source
-                    src = packet.get("src_ip", "")
-                    if "src_port" in packet and packet["src_port"]:
-                        src += f":{packet['src_port']}"
-                    item = QTableWidgetItem(src)
-                    item.setBackground(bg_color)
-                    self.advanced_filter_table.setItem(row, 2, item)
-                    
-                    # Destination
-                    dst = packet.get("dst_ip", "")
-                    if "dst_port" in packet and packet["dst_port"]:
-                        dst += f":{packet['dst_port']}"
-                    item = QTableWidgetItem(dst)
-                    item.setBackground(bg_color)
-                    self.advanced_filter_table.setItem(row, 3, item)
-                    
-                    # Protocol
-                    protocol = packet.get("protocol", "")
-                    if not protocol and "layers" in packet:
-                        protocol = packet["layers"][-1] if packet["layers"] else ""
-                    item = QTableWidgetItem(protocol)
-                    item.setBackground(bg_color)
-                    self.advanced_filter_table.setItem(row, 4, item)
-                    
-                    # Length
-                    length = packet.get("size", 0)
-                    item = QTableWidgetItem(str(length))
-                    item.setBackground(bg_color)
-                    self.advanced_filter_table.setItem(row, 5, item)
-                    
-                    # Info/Summary
-                    summary = packet.get("summary", "")
-                    item = QTableWidgetItem(summary)
-                    item.setBackground(bg_color)
-                    self.advanced_filter_table.setItem(row, 6, item)
-                
-                # Update status
-                self.advanced_filter_status.setText(f"Found {match_count} matching packets out of {len(self.captured_packets)} total packets.")
-                
-                # Select first row if available
-                if self.advanced_filter_table.rowCount() > 0:
-                    self.advanced_filter_table.selectRow(0)
-                
-            except SyntaxError as e:
-                self.advanced_filter_status.setText(f"Syntax error in query: {e}")
-                return
-                
-        except Exception as e:
-            logger.error(f"Error applying advanced filter: {e}")
-            self.advanced_filter_status.setText(f"Error: {e}")
-    
-    def clear_advanced_filter(self):
-        """Clear the advanced filter and show all packets"""
-        self.advanced_filter_input.clear()
-        self.advanced_filter_table.setRowCount(0)
-        
-        # Populate with all packets
-        self.advanced_filter_table.setRowCount(len(self.captured_packets))
-        
-        for row, packet in enumerate(self.captured_packets):
-            # Get color for this packet
-            bg_color = self.get_packet_color(packet)
-            
-            # Packet number
-            item = QTableWidgetItem(str(row + 1))
-            item.setData(Qt.UserRole, row)  # Store original index
-            item.setBackground(bg_color)
-            self.advanced_filter_table.setItem(row, 0, item)
-            
-            # Time
-            time_str = packet.get("timestamp", "")
-            if isinstance(time_str, str) and len(time_str) > 19:
-                time_str = time_str[:19]  # Truncate microseconds
-            item = QTableWidgetItem(time_str)
-            item.setBackground(bg_color)
-            self.advanced_filter_table.setItem(row, 1, item)
-            
-            # Source
-            src = packet.get("src_ip", "")
-            if "src_port" in packet and packet["src_port"]:
-                src += f":{packet['src_port']}"
-            item = QTableWidgetItem(src)
-            item.setBackground(bg_color)
-            self.advanced_filter_table.setItem(row, 2, item)
-            
-            # Destination
-            dst = packet.get("dst_ip", "")
-            if "dst_port" in packet and packet["dst_port"]:
-                dst += f":{packet['dst_port']}"
-            item = QTableWidgetItem(dst)
-            item.setBackground(bg_color)
-            self.advanced_filter_table.setItem(row, 3, item)
-            
-            # Protocol
-            protocol = packet.get("protocol", "")
-            if not protocol and "layers" in packet:
-                protocol = packet["layers"][-1] if packet["layers"] else ""
-            item = QTableWidgetItem(protocol)
-            item.setBackground(bg_color)
-            self.advanced_filter_table.setItem(row, 4, item)
-            
-            # Length
-            length = packet.get("size", 0)
-            item = QTableWidgetItem(str(length))
-            item.setBackground(bg_color)
-            self.advanced_filter_table.setItem(row, 5, item)
-            
-            # Info/Summary
-            summary = packet.get("summary", "")
-            item = QTableWidgetItem(summary)
-            item.setBackground(bg_color)
-            self.advanced_filter_table.setItem(row, 6, item)
-        
-        # Update status
-        self.advanced_filter_status.setText(f"Showing all {len(self.captured_packets)} packets.")
-        
-    def on_advanced_filter_selection(self):
-        """Handle selection in the advanced filter table"""
-        selected_items = self.advanced_filter_table.selectedItems()
-        if not selected_items:
-            return
-            
-        # Get the row of the selected item
-        row = selected_items[0].row()
-        
-        # Get the original packet index from the first column
-        packet_index_item = self.advanced_filter_table.item(row, 0)
-        if packet_index_item:
-            packet_index = packet_index_item.data(Qt.UserRole)
-            
-            # Get the corresponding packet from the list
-            if 0 <= packet_index < len(self.captured_packets):
-                packet = self.captured_packets[packet_index]
-                self.display_packet_details(packet)
-                
-                # Update status bar
-                protocol = packet.get("protocol", "")
-                if not protocol and "layers" in packet and packet["layers"]:
-                    protocol = packet["layers"][-1]
-                
-                src = packet.get("src_ip", "")
-                if "src_port" in packet and packet["src_port"]:
-                    src += f":{packet['src_port']}"
-                    
-                dst = packet.get("dst_ip", "")
-                if "dst_port" in packet and packet["dst_port"]:
-                    dst += f":{packet['dst_port']}"
-                    
-                self.statusBar().showMessage(f"Selected: Packet #{packet_index+1} | {protocol} | {src} → {dst} | {packet.get('size', 0)} bytes")
-                
-    def show_color_legend(self):
-        """Show a legend explaining the packet color coding"""
-        try:
-            legend_dialog = QDialog(self)
-            legend_dialog.setWindowTitle("Packet Color Legend")
-            legend_dialog.setMinimumSize(500, 400)
-            
-            layout = QVBoxLayout(legend_dialog)
-            
-            legend_text = QTextBrowser()
-            legend_text.setOpenExternalLinks(False)
-            legend_text.setHtml("""
-            <h2>Packet Color Legend</h2>
-            <p>Packets are color-coded based on protocol and port to help you quickly identify different types of traffic.</p>
-            
-            <table border="1" cellpadding="8" style="border-collapse: collapse; width: 100%;">
-                <tr style="background-color: #f0f0f0;">
-                    <th style="text-align: left;">Color</th>
-                    <th style="text-align: left;">Protocol/Service</th>
-                    <th style="text-align: left;">Description</th>
-                </tr>
-                <tr style="background-color: rgb(210, 230, 255);">
-                    <td>Light Blue</td>
-                    <td>HTTP</td>
-                    <td>Web traffic (TCP port 80)</td>
-                </tr>
-                <tr style="background-color: rgb(180, 210, 255);">
-                    <td>Medium Blue</td>
-                    <td>HTTPS</td>
-                    <td>Secure web traffic (TCP port 443)</td>
-                </tr>
-                <tr style="background-color: rgb(230, 210, 255);">
-                    <td>Light Purple</td>
-                    <td>DNS</td>
-                    <td>Domain name resolution (UDP port 53)</td>
-                </tr>
-                <tr style="background-color: rgb(255, 255, 200);">
-                    <td>Light Yellow</td>
-                    <td>ICMP</td>
-                    <td>Ping, traceroute, network errors</td>
-                </tr>
-                <tr style="background-color: rgb(210, 255, 210);">
-                    <td>Light Green</td>
-                    <td>ARP</td>
-                    <td>Address Resolution Protocol</td>
-                </tr>
-                <tr style="background-color: rgb(255, 230, 200);">
-                    <td>Light Orange</td>
-                    <td>SSH</td>
-                    <td>Secure Shell (TCP port 22)</td>
-                </tr>
-                <tr style="background-color: rgb(255, 200, 230);">
-                    <td>Light Pink</td>
-                    <td>FTP</td>
-                    <td>File Transfer Protocol (TCP port 21)</td>
-                </tr>
-                <tr style="background-color: rgb(200, 255, 255);">
-                    <td>Light Cyan</td>
-                    <td>DHCP</td>
-                    <td>Dynamic Host Configuration Protocol (UDP ports 67/68)</td>
-                </tr>
-                <tr style="background-color: rgb(240, 248, 255);">
-                    <td>Very Light Blue</td>
-                    <td>Other TCP</td>
-                    <td>Other TCP traffic</td>
-                </tr>
-                <tr style="background-color: rgb(240, 255, 240);">
-                    <td>Very Light Green</td>
-                    <td>Other UDP</td>
-                    <td>Other UDP traffic</td>
-                </tr>
-                <tr style="background-color: rgb(255, 200, 200);">
-                    <td>Light Red</td>
-                    <td>Error Packets</td>
-                    <td>Packets with errors or warnings</td>
-                </tr>
-                <tr style="background-color: rgb(255, 255, 255);">
-                    <td>White</td>
-                    <td>Other</td>
-                    <td>Other protocols</td>
-                </tr>
-            </table>
-            """)
-            
-            close_button = QPushButton("Close")
-            close_button.clicked.connect(legend_dialog.accept)
-            close_button.setMinimumHeight(40)
-            
-            layout.addWidget(legend_text)
-            layout.addWidget(close_button)
-            
-            legend_dialog.exec_()
-            
-        except Exception as e:
-            logger.error(f"Error showing color legend: {e}")
-            QMessageBox.warning(self, "Error", f"Could not show color legend: {e}")
-    
-    def show_advanced_filter_help(self):
-        """Show help for advanced filter queries"""
-        try:
-            help_dialog = QDialog(self)
-            help_dialog.setWindowTitle("Advanced Filter Help")
-            help_dialog.setMinimumSize(700, 500)
-            
-            layout = QVBoxLayout(help_dialog)
-            
-            help_text = QTextBrowser()
-            help_text.setOpenExternalLinks(True)
-            help_text.setHtml("""
-            <h2>Advanced Filter Query Syntax</h2>
-            <p>The advanced filter allows you to search packets using Python expressions that evaluate to True or False.</p>
-            
-            <h3>Available Fields</h3>
-            <p>You can filter on any field in the packet metadata, including:</p>
-            <ul>
-                <li><code>src_ip</code> - Source IP address</li>
-                <li><code>dst_ip</code> - Destination IP address</li>
-                <li><code>src_port</code> - Source port</li>
-                <li><code>dst_port</code> - Destination port</li>
-                <li><code>protocol</code> - Protocol name (e.g., "TCP", "UDP")</li>
-                <li><code>size</code> - Packet size in bytes</li>
-                <li><code>timestamp</code> - Packet timestamp</li>
-                <li><code>layers</code> - List of protocol layers</li>
-                <li><code>mac_src</code> - Source MAC address</li>
-                <li><code>mac_dst</code> - Destination MAC address</li>
-                <li><code>ttl</code> - Time to live</li>
-                <li><code>dns</code> - DNS information (if present)</li>
-                <li><code>http</code> - HTTP information (if present)</li>
-            </ul>
-            
-            <h3>Query Examples</h3>
-            <ul>
-                <li><code>src_ip == '192.168.1.1'</code> - Packets from a specific IP</li>
-                <li><code>dst_port == 80 or dst_port == 443</code> - HTTP or HTTPS traffic</li>
-                <li><code>protocol == 'TCP' and size > 1000</code> - Large TCP packets</li>
-                <li><code>'DNS' in layers</code> - DNS packets</li>
-                <li><code>src_ip.startswith('10.0')</code> - Packets from 10.0.x.x subnet</li>
-                <li><code>dst_ip.startswith('192.168') and dst_port == 22</code> - SSH to local network</li>
-                <li><code>'HTTP' in layers and 'GET' in str(http)</code> - HTTP GET requests</li>
-                <li><code>ttl < 64</code> - Packets with low TTL</li>
-                <li><code>size > 1500</code> - Jumbo packets</li>
-            </ul>
-            
-            <h3>Operators</h3>
-            <ul>
-                <li><code>==</code> - Equal to</li>
-                <li><code>!=</code> - Not equal to</li>
-                <li><code>&gt;</code> - Greater than</li>
-                <li><code>&lt;</code> - Less than</li>
-                <li><code>&gt;=</code> - Greater than or equal to</li>
-                <li><code>&lt;=</code> - Less than or equal to</li>
-                <li><code>and</code> - Logical AND</li>
-                <li><code>or</code> - Logical OR</li>
-                <li><code>not</code> - Logical NOT</li>
-                <li><code>in</code> - Membership test</li>
-            </ul>
-            
-            <h3>String Functions</h3>
-            <p>You can use string methods like:</p>
-            <ul>
-                <li><code>startswith()</code> - Check if string starts with a prefix</li>
-                <li><code>endswith()</code> - Check if string ends with a suffix</li>
-                <li><code>contains()</code> - Check if string contains a substring</li>
-            </ul>
-            
-            <h3>Notes</h3>
-            <ul>
-                <li>Queries are case-sensitive</li>
-                <li>String values must be in quotes: <code>'192.168.1.1'</code> or <code>"192.168.1.1"</code></li>
-                <li>Use <code>==</code> for equality comparison, not <code>=</code></li>
-                <li>Some fields may not be present in all packets</li>
-            </ul>
-            """)
-            
-            close_button = QPushButton("Close")
-            close_button.clicked.connect(help_dialog.accept)
-            close_button.setMinimumHeight(40)
-            
-            layout.addWidget(help_text)
-            layout.addWidget(close_button)
-            
-            help_dialog.exec_()
-            
-        except Exception as e:
-            logger.error(f"Error showing advanced filter help: {e}")
-            QMessageBox.warning(self, "Error", f"Could not show help: {e}")
-    
-    def show_filter_help(self):
-        """Show comprehensive filter guide in a dedicated dialog"""
-        try:
-            # Create a dialog for the filter guide
-            filter_guide_dialog = QDialog(self)
-            filter_guide_dialog.setWindowTitle("Packet Filter Guide")
-            filter_guide_dialog.setMinimumSize(800, 600)
-            
-            # Create layout
-            layout = QVBoxLayout(filter_guide_dialog)
-            
-            # Create tab widget for different filter categories
-            tabs = QTabWidget()
-            
-            # Create text browser for each tab
-            basic_filters = QTextBrowser()
-            advanced_filters = QTextBrowser()
-            examples = QTextBrowser()
-            operators = QTextBrowser()
-            special_filters = QTextBrowser()
-        except Exception as e:
-            logger.error(f"Error creating filter help dialog: {e}")
-            QMessageBox.warning(self, "Error", f"Could not create filter help dialog: {e}")
-            return
-        
-        # Set larger font for better readability
-        font = QFont(QApplication.font().family(), 12)
-        basic_filters.setFont(font)
-        advanced_filters.setFont(font)
-        examples.setFont(font)
-        operators.setFont(font)
-        special_filters.setFont(font)
-        
-        # Add tabs
-        tabs.addTab(basic_filters, "Basic Filters")
-        tabs.addTab(advanced_filters, "Advanced Filters")
-        tabs.addTab(operators, "Operators & Syntax")
-        tabs.addTab(examples, "Examples")
-        tabs.addTab(special_filters, "Special Filters")
-        
-        # Basic filters content
-        basic_filters.setHtml("""
-        <h2>Basic Protocol Filters</h2>
-        <p>These filters show packets based on protocol type:</p>
-        
-        <table border="1" cellpadding="5" style="border-collapse: collapse; width: 100%;">
-            <tr style="background-color: #f0f0f0;">
-                <th style="text-align: left; width: 20%;">Filter</th>
-                <th style="text-align: left;">Description</th>
-            </tr>
-            <tr>
-                <td><code>tcp</code></td>
-                <td>Show only TCP packets</td>
-            </tr>
-            <tr>
-                <td><code>udp</code></td>
-                <td>Show only UDP packets</td>
-            </tr>
-            <tr>
-                <td><code>icmp</code></td>
-                <td>Show only ICMP packets</td>
-            </tr>
-            <tr>
-                <td><code>arp</code></td>
-                <td>Show only ARP packets</td>
-            </tr>
-            <tr>
-                <td><code>dns</code></td>
-                <td>Show only DNS packets</td>
-            </tr>
-            <tr>
-                <td><code>http</code></td>
-                <td>Show only HTTP packets</td>
-            </tr>
-            <tr>
-                <td><code>ip</code></td>
-                <td>Show only IPv4 packets</td>
-            </tr>
-            <tr>
-                <td><code>ip6</code></td>
-                <td>Show only IPv6 packets</td>
-            </tr>
-        </table>
-        
-        <h2>Host & Network Filters</h2>
-        <p>These filters show packets based on IP addresses:</p>
-        
-        <table border="1" cellpadding="5" style="border-collapse: collapse; width: 100%;">
-            <tr style="background-color: #f0f0f0;">
-                <th style="text-align: left; width: 40%;">Filter</th>
-                <th style="text-align: left;">Description</th>
-            </tr>
-            <tr>
-                <td><code>host 192.168.1.1</code></td>
-                <td>Show packets with this IP as source or destination</td>
-            </tr>
-            <tr>
-                <td><code>src host 192.168.1.1</code></td>
-                <td>Show packets with this IP as source</td>
-            </tr>
-            <tr>
-                <td><code>dst host 192.168.1.1</code></td>
-                <td>Show packets with this IP as destination</td>
-            </tr>
-            <tr>
-                <td><code>net 192.168.0.0/24</code></td>
-                <td>Show packets in this network range</td>
-            </tr>
-        </table>
-        
-        <h2>Port Filters</h2>
-        <p>These filters show packets based on port numbers:</p>
-        
-        <table border="1" cellpadding="5" style="border-collapse: collapse; width: 100%;">
-            <tr style="background-color: #f0f0f0;">
-                <th style="text-align: left; width: 30%;">Filter</th>
-                <th style="text-align: left;">Description</th>
-            </tr>
-            <tr>
-                <td><code>port 80</code></td>
-                <td>Show packets with this port as source or destination</td>
-            </tr>
-            <tr>
-                <td><code>src port 80</code></td>
-                <td>Show packets with this port as source</td>
-            </tr>
-            <tr>
-                <td><code>dst port 80</code></td>
-                <td>Show packets with this port as destination</td>
-            </tr>
-            <tr>
-                <td><code>port 1000-2000</code></td>
-                <td>Show packets with ports in this range</td>
-            </tr>
-        </table>
-        """)
-        
-        # Advanced filters content
-        advanced_filters.setHtml("""
-        <h2>Advanced Protocol Filters</h2>
-        <p>These filters allow for more specific protocol filtering:</p>
-        
-        <table border="1" cellpadding="5" style="border-collapse: collapse; width: 100%;">
-            <tr style="background-color: #f0f0f0;">
-                <th style="text-align: left; width: 40%;">Filter</th>
-                <th style="text-align: left;">Description</th>
-            </tr>
-            <tr>
-                <td><code>tcp[tcpflags] & (tcp-syn|tcp-fin) != 0</code></td>
-                <td>Show TCP packets with SYN or FIN flags set</td>
-            </tr>
-            <tr>
-                <td><code>tcp[tcpflags] & tcp-syn != 0</code></td>
-                <td>Show only TCP SYN packets</td>
-            </tr>
-            <tr>
-                <td><code>tcp[tcpflags] & tcp-ack != 0</code></td>
-                <td>Show only TCP ACK packets</td>
-            </tr>
-            <tr>
-                <td><code>tcp[tcpflags] & tcp-rst != 0</code></td>
-                <td>Show only TCP RST packets</td>
-            </tr>
-            <tr>
-                <td><code>tcp[tcpflags] & tcp-push != 0</code></td>
-                <td>Show only TCP PSH packets</td>
-            </tr>
-            <tr>
-                <td><code>tcp[2:2] = 80</code></td>
-                <td>Show packets with destination port 80 (HTTP)</td>
-            </tr>
-            <tr>
-                <td><code>tcp[0:2] = 80</code></td>
-                <td>Show packets with source port 80</td>
-            </tr>
-            <tr>
-                <td><code>ether host 00:11:22:33:44:55</code></td>
-                <td>Show packets with this MAC address</td>
-            </tr>
-            <tr>
-                <td><code>ip[8] = 1</code></td>
-                <td>Show packets with TTL=1</td>
-            </tr>
-            <tr>
-                <td><code>greater 1000</code></td>
-                <td>Show packets larger than 1000 bytes</td>
-            </tr>
-            <tr>
-                <td><code>less 128</code></td>
-                <td>Show packets smaller than 128 bytes</td>
-            </tr>
-        </table>
-        
-        <h2>Application Layer Filters</h2>
-        <p>These filters target application-layer protocols:</p>
-        
-        <table border="1" cellpadding="5" style="border-collapse: collapse; width: 100%;">
-            <tr style="background-color: #f0f0f0;">
-                <th style="text-align: left; width: 30%;">Filter</th>
-                <th style="text-align: left;">Description</th>
-            </tr>
-            <tr>
-                <td><code>http.request</code></td>
-                <td>Show HTTP request packets</td>
-            </tr>
-            <tr>
-                <td><code>http.response</code></td>
-                <td>Show HTTP response packets</td>
-            </tr>
-            <tr>
-                <td><code>dns.qry.name contains "example"</code></td>
-                <td>Show DNS queries containing "example"</td>
-            </tr>
-            <tr>
-                <td><code>dns.resp.type == 1</code></td>
-                <td>Show DNS responses with A records</td>
-            </tr>
-        </table>
-        """)
-        
-        # Operators content
-        operators.setHtml("""
-        <h2>Logical Operators</h2>
-        <p>These operators allow you to combine multiple filter conditions:</p>
-        
-        <table border="1" cellpadding="5" style="border-collapse: collapse; width: 100%;">
-            <tr style="background-color: #f0f0f0;">
-                <th style="text-align: left; width: 20%;">Operator</th>
-                <th style="text-align: left;">Description</th>
-                <th style="text-align: left;">Example</th>
-            </tr>
-            <tr>
-                <td><code>and</code> or <code>&&</code></td>
-                <td>Logical AND - both conditions must be true</td>
-                <td><code>tcp and port 80</code></td>
-            </tr>
-            <tr>
-                <td><code>or</code> or <code>||</code></td>
-                <td>Logical OR - either condition can be true</td>
-                <td><code>tcp or udp</code></td>
-            </tr>
-            <tr>
-                <td><code>not</code> or <code>!</code></td>
-                <td>Logical NOT - negate the condition</td>
-                <td><code>not icmp</code> or <code>!icmp</code></td>
-            </tr>
-            <tr>
-                <td><code>==</code> or <code>=</code></td>
-                <td>Equal to</td>
-                <td><code>ip[8] == 64</code></td>
-            </tr>
-            <tr>
-                <td><code>!=</code></td>
-                <td>Not equal to</td>
-                <td><code>tcp[tcpflags] != 0</code></td>
-            </tr>
-            <tr>
-                <td><code>&gt;</code></td>
-                <td>Greater than</td>
-                <td><code>ip[8] > 1</code></td>
-            </tr>
-            <tr>
-                <td><code>&lt;</code></td>
-                <td>Less than</td>
-                <td><code>ip[8] < 255</code></td>
-            </tr>
-            <tr>
-                <td><code>&gt;=</code></td>
-                <td>Greater than or equal to</td>
-                <td><code>tcp[0:2] >= 1024</code></td>
-            </tr>
-            <tr>
-                <td><code>&lt;=</code></td>
-                <td>Less than or equal to</td>
-                <td><code>tcp[0:2] <= 1023</code></td>
-            </tr>
-        </table>
-        
-        <h2>Grouping with Parentheses</h2>
-        <p>Use parentheses to group expressions and control precedence:</p>
-        
-        <pre>
-        host 192.168.1.1 and (tcp or icmp)
-        </pre>
-        
-        <h2>Byte Offset Syntax</h2>
-        <p>Access specific bytes in packet headers:</p>
-        
-        <pre>
-        proto[offset:size]
-        </pre>
-        
-        <p>Where:</p>
-        <p>Where:</p>
-        <ul>
-            <li><code>proto</code> is the protocol (ip, tcp, udp, etc.)</li>
-            <li><code>offset</code> is the byte offset from the start of the header</li>
-            <li><code>size</code> is the number of bytes to examine (1, 2, or 4)</li>
-        </ul>
-        
-        <p>Examples:</p>
-        <pre>
-        ip[0] & 0xf0 = 0x40   # IPv4 packets
-        tcp[13] & 0x02 != 0   # TCP SYN flag
-        </pre>
-        """)
-        
-        # Examples content
-        examples.setHtml("""
-        <h2>Common Filter Examples</h2>
-        <p>Here are some practical examples of packet filters:</p>
-        
-        <table border="1" cellpadding="5" style="border-collapse: collapse; width: 100%;">
-            <tr style="background-color: #f0f0f0;">
-                <th style="text-align: left;">Filter Expression</th>
-                <th style="text-align: left;">Description</th>
-            </tr>
-            <tr>
-                <td><code>tcp port 80 or tcp port 443</code></td>
-                <td>Show HTTP or HTTPS traffic</td>
-            </tr>
-            <tr>
-                <td><code>host 192.168.1.1 and not (port 22 or port 23)</code></td>
-                <td>Show traffic to/from 192.168.1.1 except SSH and Telnet</td>
-            </tr>
-            <tr>
-                <td><code>tcp[tcpflags] & (tcp-syn|tcp-fin) != 0 and not tcp[tcpflags] & (tcp-ack) != 0</code></td>
-                <td>Show TCP SYN or FIN packets without the ACK flag (potential scan)</td>
-            </tr>
-            <tr>
-                <td><code>tcp port 80 and (tcp[((tcp[12:1] & 0xf0) >> 2):4] = 0x47455420 or tcp[((tcp[12:1] & 0xf0) >> 2):4] = 0x504f5354)</code></td>
-                <td>Show HTTP GET or POST requests</td>
-            </tr>
-            <tr>
-                <td><code>icmp[icmptype] = icmp-echo or icmp[icmptype] = icmp-echoreply</code></td>
-                <td>Show ICMP ping requests and replies</td>
-            </tr>
-            <tr>
-                <td><code>ether broadcast or ip broadcast</code></td>
-                <td>Show broadcast traffic</td>
-            </tr>
-            <tr>
-                <td><code>ether multicast or ip multicast</code></td>
-                <td>Show multicast traffic</td>
-            </tr>
-            <tr>
-                <td><code>ip[6:2] & 0x1fff != 0</code></td>
-                <td>Show fragmented IP packets</td>
-            </tr>
-            <tr>
-                <td><code>ip[8] < 10</code></td>
-                <td>Show packets with TTL less than 10</td>
-            </tr>
-            <tr>
-                <td><code>tcp[2:2] >= 1024 and tcp[0:2] >= 1024</code></td>
-                <td>Show traffic between ephemeral ports (non-server ports)</td>
-            </tr>
-        </table>
-        
-        <h2>Troubleshooting Examples</h2>
-        <p>Filters useful for network troubleshooting:</p>
-        
-        <table border="1" cellpadding="5" style="border-collapse: collapse; width: 100%;">
-            <tr style="background-color: #f0f0f0;">
-                <th style="text-align: left;">Filter Expression</th>
-                <th style="text-align: left;">Use Case</th>
-            </tr>
-            <tr>
-                <td><code>tcp[tcpflags] & tcp-rst != 0</code></td>
-                <td>Find connection resets that might indicate service problems</td>
-            </tr>
-            <tr>
-                <td><code>tcp[tcpflags] & tcp-syn != 0 and tcp[tcpflags] & tcp-ack == 0</code></td>
-                <td>Find unanswered connection attempts</td>
-            </tr>
-            <tr>
-                <td><code>icmp[icmptype] = icmp-unreach</code></td>
-                <td>Find ICMP "destination unreachable" messages</td>
-            </tr>
-            <tr>
-                <td><code>greater 1500</code></td>
-                <td>Find packets larger than typical MTU (potential fragmentation issues)</td>
-            </tr>
-            <tr>
-                <td><code>arp and arp[6:2] = 2</code></td>
-                <td>Find ARP replies (useful for IP conflict detection)</td>
-            </tr>
-        </table>
-        """)
-        
-        # Special filters content
-        special_filters.setHtml("""
-        <h2>Special Filter Expressions</h2>
-        <p>These filters provide additional functionality:</p>
-        
-        <table border="1" cellpadding="5" style="border-collapse: collapse; width: 100%;">
-            <tr style="background-color: #f0f0f0;">
-                <th style="text-align: left; width: 30%;">Filter</th>
-                <th style="text-align: left;">Description</th>
-            </tr>
-            <tr>
-                <td><code>vlan</code></td>
-                <td>Show only VLAN-tagged traffic</td>
-            </tr>
-            <tr>
-                <td><code>vlan 100</code></td>
-                <td>Show traffic on VLAN 100</td>
-            </tr>
-            <tr>
-                <td><code>mpls</code></td>
-                <td>Show only MPLS traffic</td>
-            </tr>
-            <tr>
-                <td><code>pppoed</code></td>
-                <td>Show PPPoE discovery packets</td>
-            </tr>
-            <tr>
-                <td><code>pppoes</code></td>
-                <td>Show PPPoE session packets</td>
-            </tr>
-            <tr>
-                <td><code>geneve</code></td>
-                <td>Show GENEVE encapsulated packets</td>
-            </tr>
-            <tr>
-                <td><code>vxlan</code></td>
-                <td>Show VXLAN encapsulated packets</td>
-            </tr>
-            <tr>
-                <td><code>tcp port 179</code></td>
-                <td>Show BGP traffic</td>
-            </tr>
-            <tr>
-                <td><code>tcp port 389</code></td>
-                <td>Show LDAP traffic</td>
-            </tr>
-            <tr>
-                <td><code>tcp port 445</code></td>
-                <td>Show SMB traffic</td>
-            </tr>
-        </table>
-        
-        <h2>Filter Optimization Tips</h2>
-        <p>For better performance when filtering large captures:</p>
-        
-        <ul>
-            <li>Start with the most specific filter that will eliminate the most packets</li>
-            <li>Use protocol filters before content filters</li>
-            <li>Avoid complex regular expressions when possible</li>
-            <li>Use host/port filters before examining packet contents</li>
-            <li>When using multiple OR conditions, group similar filters together</li>
-        </ul>
-        
-        <h2>Saving Filters</h2>
-        <p>You can save frequently used filters for quick access:</p>
-        
-        <ol>
-            <li>Enter your filter expression in the filter box</li>
-            <li>Click the "Save" button next to the filter box</li>
-            <li>Enter a name for your filter</li>
-            <li>Access saved filters from the dropdown menu</li>
-        </ol>
-        """)
-        
-        # Add close button
-        close_button = QPushButton("Close")
-        close_button.setMinimumHeight(40)
-        close_button.setFont(QFont(QApplication.font().family(), 12))
-        close_button.clicked.connect(filter_guide_dialog.accept)
-        
-        # Add widgets to layout
-        layout.addWidget(tabs)
-        layout.addWidget(close_button)
-        
-        try:
-            # Show the dialog
-            filter_guide_dialog.exec_()
-        except Exception as e:
-            logger.error(f"Error displaying filter help dialog: {e}")
-            QMessageBox.warning(self, "Error", f"Could not display filter help: {e}")
-    
-    def update_protocol_stats(self, packet=None):
-        """Update protocol statistics.
-        - If 'packet' is provided: increment counts for that packet.
-        - If 'packet' is None: recompute counts from all captured packets (used after loading files).
-        """
-        # Recompute from scratch when no packet is provided
-        if packet is None:
-            # Reset counters
-            for key in self.protocol_stats:
-                self.protocol_stats[key] = 0
-            
-            # Rebuild stats from currently loaded packets
-            for p in getattr(self, 'captured_packets', []):
-                proto = p.get("protocol", "")
-                if not proto and "layers" in p and p["layers"]:
-                    proto = p["layers"][-1]
-                
-                if proto == "TCP":
-                    self.protocol_stats["tcp_packets"] += 1
-                elif proto == "UDP":
-                    self.protocol_stats["udp_packets"] += 1
-                elif proto == "ICMP":
-                    self.protocol_stats["icmp_packets"] += 1
-                elif proto == "ARP":
-                    self.protocol_stats["arp_packets"] += 1
-                else:
-                    self.protocol_stats["other_packets"] += 1
-                
-                if "DNS" in p.get("layers", []):
-                    self.protocol_stats["dns_packets"] += 1
-                if "HTTP" in p.get("layers", []):
-                    self.protocol_stats["http_packets"] += 1
-            
-            # Update status bar labels
-            self.tcp_label.setText(f"TCP: {self.protocol_stats['tcp_packets']:,}")
-            self.udp_label.setText(f"UDP: {self.protocol_stats['udp_packets']:,}")
-            self.icmp_label.setText(f"ICMP: {self.protocol_stats['icmp_packets']:,}")
-            self.other_label.setText(f"Other: {self.protocol_stats['other_packets']:,}")
-            return
-        
-        # Incremental update for a single packet
-        # Get protocol
-        protocol = packet.get("protocol", "")
-        if not protocol and "layers" in packet and packet["layers"]:
-            protocol = packet["layers"][-1]  # Use highest layer
-        
-        # Update protocol counters
-        if protocol == "TCP":
-            self.protocol_stats["tcp_packets"] += 1
-        elif protocol == "UDP":
-            self.protocol_stats["udp_packets"] += 1
-        elif protocol == "ICMP":
-            self.protocol_stats["icmp_packets"] += 1
-        elif protocol == "ARP":
-            self.protocol_stats["arp_packets"] += 1
-        else:
-            self.protocol_stats["other_packets"] += 1
-        
-        # Check for application protocols
-        if "DNS" in packet.get("layers", []):
-            self.protocol_stats["dns_packets"] += 1
-        if "HTTP" in packet.get("layers", []):
-            self.protocol_stats["http_packets"] += 1
-        
-        # Update status bar labels
-        self.tcp_label.setText(f"TCP: {self.protocol_stats['tcp_packets']:,}")
-        self.udp_label.setText(f"UDP: {self.protocol_stats['udp_packets']:,}")
-        self.icmp_label.setText(f"ICMP: {self.protocol_stats['icmp_packets']:,}")
-        self.other_label.setText(f"Other: {self.protocol_stats['other_packets']:,}")
-    
-    def clear_display(self):
-        """Clear all captured packets from the display"""
-        if not self.captured_packets:
-            return
-        
-        reply = QMessageBox.question(
-            self, "Clear Display",
-            f"Are you sure you want to clear {len(self.captured_packets)} packets from the display?",
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
-        )
-        
-        if reply == QMessageBox.Yes:
-            # Clear packet table
-            self.packet_table.setRowCount(0)
-            
-            # Clear packet details
-            self.packet_tree.clear()
-            self.hex_view.clear()
-            self.raw_view.clear()
-            self.summary_view.clear()
-            
-            # Clear advanced filter
-            self.advanced_filter_table.setRowCount(0)
-            self.advanced_filter_status.setText("No packets captured yet.")
-            self.advanced_filter_input.clear()
-            
-            # Clear packet list
-            self.captured_packets = []
-            
-            # Reset protocol statistics
-            for key in self.protocol_stats:
-                self.protocol_stats[key] = 0
-            
-            # Update status labels
-            self.tcp_label.setText("TCP: 0")
-            self.udp_label.setText("UDP: 0")
-            self.icmp_label.setText("ICMP: 0")
-            self.other_label.setText("Other: 0")
-            
-            # Update UI
-            self.setWindowTitle("PyGuard Desktop - 0 packets captured")
-            self.statusBar().showMessage("Display cleared")
-            logger.info("Display cleared")
-    
-    def load_display_config(self):
-        """Load display settings from config.yaml"""
-        try:
-            import yaml
-            
-            # Load configuration
-            config_path = "config.yaml"
-            try:
-                with open(config_path, 'r') as f:
-                    config = yaml.safe_load(f)
-                
-                # Get display configuration
-                display_config = config.get('display', {})
-                
-                # Update display settings if they exist in the config
-                if 'max_packets' in display_config:
-                    max_packets = display_config['max_packets']
-                    
-                    # Handle special case for unlimited (-1)
-                    if max_packets == -1:
-                        self.max_display_packets = float('inf')
-                        logger.info("Loaded max_display_packets from config: Unlimited")
-                    else:
-                        self.max_display_packets = max_packets
-                        logger.info(f"Loaded max_display_packets from config: {self.max_display_packets}")
-                
-                if 'update_interval_ms' in display_config:
-                    self.display_update_interval = display_config['update_interval_ms']
-                    logger.info(f"Loaded display_update_interval from config: {self.display_update_interval} ms")
-                
-            except Exception as e:
-                logger.warning(f"Error loading display configuration: {e}")
-                logger.warning("Using default display settings")
-                # Use default values (already set in __init__)
-        
-        except ImportError:
-            logger.warning("PyYAML not available, using default display settings")
-            # Use default values (already set in __init__)
-    
-    def set_packet_limit(self, limit_text):
-        """Set the maximum number of packets to display and save to config"""
-        try:
-            if limit_text == "Unlimited":
-                self.max_display_packets = float('inf')
-                self.statusBar().showMessage(f"Packet display limit set to unlimited. All packets will be kept.")
-                limit_value = -1  # Use -1 to represent unlimited in the config
-            else:
-                # Extract the number part and parse it (remove commas)
-                limit_number = limit_text.split(" ")[0]
-                limit = int(limit_number.replace(",", ""))
-                self.max_display_packets = limit
-                limit_value = limit
-                
-                # Show a more informative message
-                if self.max_display_packets < len(self.captured_packets):
-                    # We already have more packets than the new limit
-                    excess = len(self.captured_packets) - self.max_display_packets
-                    self.statusBar().showMessage(
-                        f"Packet display limit set to {limit_number}. {excess:,} oldest packets will be removed on next update."
-                    )
-                else:
-                    self.statusBar().showMessage(
-                        f"Packet display limit set to {limit_number}. Older packets will be removed when this limit is reached."
-                    )
-            
-            logger.info(f"Packet display limit set to {limit_text}")
-            
-            # Save the setting to the config file
-            self.save_display_config(limit_value)
-            
-        except Exception as e:
-            logger.error(f"Error setting packet limit: {e}")
-            self.max_display_packets = 100000  # Default
-    
-    def save_display_config(self, max_packets_value):
-        """Save display settings to config.yaml"""
-        try:
-            import yaml
-            
-            # Load current configuration
-            config_path = "config.yaml"
-            try:
-                with open(config_path, 'r') as f:
-                    config = yaml.safe_load(f)
-                
-                # Create display section if it doesn't exist
-                if 'display' not in config:
-                    config['display'] = {}
-                
-                # Update max_packets value
-                if max_packets_value == -1:  # Unlimited
-                    config['display']['max_packets'] = -1
-                else:
-                    config['display']['max_packets'] = max_packets_value
-                
-                # Save update_interval_ms if it's not already in the config
-                if 'update_interval_ms' not in config['display']:
-                    config['display']['update_interval_ms'] = self.display_update_interval
-                
-                # Save the updated configuration
-                with open(config_path, 'w') as f:
-                    yaml.dump(config, f, default_flow_style=False)
-                
-                logger.info(f"Saved display configuration to {config_path}")
-                
-            except Exception as e:
-                logger.error(f"Error saving display configuration: {e}")
-        
-        except ImportError:
-            logger.warning("PyYAML not available, cannot save display settings")
-    
-    def handle_error(self, error_message):
-        """Handle errors from the capture thread"""
-        logger.error(f"Capture error: {error_message}")
-        self.statusBar().showMessage(f"Error: {error_message}")
-        
-        # Reset UI
-        self.start_button.setEnabled(True)
-        self.stop_button.setEnabled(False)
-        self.status_label.setText("Error")
-        
-        # Show error message
-        QMessageBox.critical(self, "Capture Error", error_message)
-    
-    def _format_packet(self, metadata):
-        """Format packet metadata for display"""
-        # Basic packet info
-        packet_str = f"--- Packet captured at {metadata['timestamp']} ---\n"
-        packet_str += f"Protocol: {metadata['protocol']}\n"
-        
-        # IP information
-        packet_str += f"Source IP: {metadata['src_ip']}"
-        if metadata['src_port']:
-            packet_str += f":{metadata['src_port']}"
-        packet_str += "\n"
-        
-        packet_str += f"Destination IP: {metadata['dst_ip']}"
-        if metadata['dst_port']:
-            packet_str += f":{metadata['dst_port']}"
-        packet_str += "\n"
-        
-        # Size information
-        packet_str += f"Size: {metadata['size']} bytes\n"
-        
-        # Protocol-specific information
-        if metadata['protocol'] == "TCP" and 'tcp_flags' in metadata:
-            packet_str += f"TCP Flags: {', '.join(metadata['tcp_flags'])}\n"
-        
-        elif metadata['protocol'] == "ICMP" and 'icmp_type' in metadata:
-            packet_str += f"ICMP Type: {metadata['icmp_type']}, Code: {metadata['icmp_code']}\n"
-        
-        packet_str += "\n"
-        return packet_str
-    
-    def save_packets(self):
-        """Save captured packets to a file"""
-        if not self.captured_packets:
-            QMessageBox.warning(self, "No Packets", "No packets to save.")
-            return
-            
-        # Check if we have a large number of packets
-        packet_count = len(self.captured_packets)
-        if packet_count > 10000:
-            confirm = QMessageBox.question(
-                self, "Large Capture",
-                f"You are about to save {packet_count:,} packets, which may take some time. Continue?",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes
-            )
-            if confirm != QMessageBox.Yes:
-                return
-        
-        # Ask for file name and format
-        file_dialog = QFileDialog()
-        file_dialog.setAcceptMode(QFileDialog.AcceptSave)
-        file_dialog.setNameFilter("PCAP files (*.pcap);;JSON files (*.json);;CSV files (*.csv)")
-        file_dialog.setDefaultSuffix("pcap")
-        
-        if not file_dialog.exec_():
-            return
-        
-        file_path = file_dialog.selectedFiles()[0]
-        selected_filter = file_dialog.selectedNameFilter()
-        
-        # Create progress dialog for large captures
-        progress = QProgressDialog("Saving packets...", "Cancel", 0, packet_count, self)
-        progress.setWindowTitle("Saving Packets")
-        progress.setWindowModality(Qt.WindowModal)
-        progress.setMinimumDuration(500)  # Only show for operations taking > 500ms
-        
-        try:
-            packet_count = len(self.captured_packets)
-            
-            if "pcap" in selected_filter:
-                # Save as PCAP file
-                from scapy.all import wrpcap
-                
-                # Check if we have raw packet data
-                if 'packet_data' in self.captured_packets[0]:
-                    # For PCAP files, we need to collect all packet data first
-                    progress.setLabelText("Preparing packet data for PCAP...")
-                    QApplication.processEvents()
-                    
-                    # Get all packet data
-                    packet_data_list = []
-                    for i, p in enumerate(self.captured_packets):
-                        if 'packet_data' in p:
-                            packet_data_list.append(p['packet_data'])
-                        
-                        # Update progress every 100 packets
-                        if i % 100 == 0:
-                            progress.setValue(i)
-                            QApplication.processEvents()
-                            
-                            # Check for cancel
-                            if progress.wasCanceled():
-                                logger.info("PCAP save canceled by user")
-                                return
-                    
-                    # Write PCAP file
-                    progress.setLabelText("Writing PCAP file...")
-                    QApplication.processEvents()
-                    wrpcap(file_path, packet_data_list)
-                    logger.info(f"Saved {len(packet_data_list)} packets to PCAP file: {file_path}")
-                else:
-                    # We don't have raw packet data, show error
-                    progress.close()
-                    QMessageBox.warning(self, "Cannot Save PCAP", 
-                                       "Cannot save as PCAP because raw packet data is not available. Try JSON format instead.")
-                    return
-            
-            elif "json" in selected_filter:
-                # Save as JSON file
-                import json
-                
-                # Convert packets to serializable format
-                progress.setLabelText("Converting packets to JSON format...")
-                serializable_packets = []
-                
-                for i, packet in enumerate(self.captured_packets):
-                    # Create a copy of the packet dict
-                    packet_copy = {}
-                    for key, value in packet.items():
-                        # Skip binary data and complex objects
-                        if key not in ['packet_data', 'scapy_packet']:
-                            packet_copy[key] = value
-                    serializable_packets.append(packet_copy)
-                    
-                    # Update progress every 100 packets
-                    if i % 100 == 0:
-                        progress.setValue(i)
-                        QApplication.processEvents()
-                        
-                        # Check for cancel
-                        if progress.wasCanceled():
-                            logger.info("JSON save canceled by user")
-                            return
-                
-                # Write JSON file
-                progress.setLabelText("Writing JSON file...")
-                QApplication.processEvents()
-                with open(file_path, 'w', encoding='utf-8') as f:
-                    json.dump(serializable_packets, f, indent=2, ensure_ascii=False)
-                
-                logger.info(f"Saved {len(serializable_packets)} packets to JSON file: {file_path}")
-            
-            elif "csv" in selected_filter:
-                # Save as CSV file
-                import csv
-                
-                # Define CSV fields
-                fields = ['frame_number', 'timestamp', 'src_ip', 'src_port', 
-                         'dst_ip', 'dst_port', 'protocol', 'size', 'summary']
-                
-                # Open file with UTF-8 encoding to handle Unicode characters
-                with open(file_path, 'w', newline='', encoding='utf-8') as f:
-                    writer = csv.DictWriter(f, fieldnames=fields, extrasaction='ignore')
-                    writer.writeheader()
-                    
-                    for i, packet in enumerate(self.captured_packets):
-                        # Create a clean row with only simple values
-                        row = {}
-                        for field in fields:
-                            if field in packet:
-                                # Convert complex objects to strings and handle Unicode
-                                if isinstance(packet[field], (dict, list)):
-                                    row[field] = clean_unicode_for_csv(str(packet[field]))
-                                else:
-                                    # Handle Unicode characters using helper function
-                                    row[field] = clean_unicode_for_csv(packet[field])
-                            elif field == 'frame_number' and 'frame_number' not in packet:
-                                # Add frame number if not present
-                                row[field] = i + 1
-                        
-                        writer.writerow(row)
-                        
-                        # Update progress every 100 packets
-                        if i % 100 == 0:
-                            progress.setValue(i)
-                            QApplication.processEvents()
-                            
-                            # Check for cancel
-                            if progress.wasCanceled():
-                                logger.info("CSV save canceled by user")
-                                return
-                
-                logger.info(f"Saved {len(self.captured_packets)} packets to CSV file: {file_path}")
-            
-            # Set progress to 100%
-            progress.setValue(packet_count)
-            
-            QMessageBox.information(self, "Save Complete", f"Saved {packet_count} packets to {file_path}")
-        
-        except Exception as e:
-            logger.error(f"Error saving packets: {e}")
-            QMessageBox.critical(self, "Save Error", f"Error saving packets: {e}")
-        finally:
-            # Make sure progress dialog is closed
-            progress.close()
-    
-    def open_file(self):
-        """Open and load saved packet files (PCAP, CSV, JSON)"""
-        # Ask for file to open
-        file_dialog = QFileDialog()
-        file_dialog.setAcceptMode(QFileDialog.AcceptOpen)
-        file_dialog.setNameFilter("All supported files (*.pcap *.csv *.json);;PCAP files (*.pcap);;CSV files (*.csv);;JSON files (*.json)")
-        file_dialog.setFileMode(QFileDialog.ExistingFile)
-        
-        if not file_dialog.exec_():
-            return
-        
-        file_path = file_dialog.selectedFiles()[0]
-        
-        # Determine file type from extension
-        file_ext = file_path.lower().split('.')[-1]
-        
-        # Show loading dialog
-        progress = QProgressDialog("Loading file...", "Cancel", 0, 0, self)
-        progress.setWindowTitle("Loading Packets")
-        progress.setWindowModality(Qt.WindowModal)
-        progress.setMinimumDuration(0)  # Show immediately
-        progress.setValue(0)
-        QApplication.processEvents()
-        
-        try:
-            if file_ext == 'pcap':
-                self.load_pcap_file(file_path, progress)
-            elif file_ext == 'csv':
-                self.load_csv_file(file_path, progress)
-            elif file_ext == 'json':
-                self.load_json_file(file_path, progress)
-            else:
-                QMessageBox.warning(self, "Unsupported Format", 
-                                   f"Unsupported file format: {file_ext}")
-                return
-            
-            # Update the display
-            self.update_packet_display()
-            self.update_protocol_stats()
-            
-            # Show success message
-            packet_count = len(self.captured_packets)
-            QMessageBox.information(self, "File Loaded", 
-                                   f"Successfully loaded {packet_count} packets from {file_path}")
-            
-            logger.info(f"Loaded {packet_count} packets from {file_path}")
-            
-        except Exception as e:
-            logger.error(f"Error loading file {file_path}: {e}")
-            QMessageBox.critical(self, "Load Error", f"Error loading file: {e}")
-        finally:
-            progress.close()
-    
-    def load_pcap_file(self, file_path, progress):
-        """Load packets from a PCAP file with enhanced error handling"""
-        try:
-            from scapy.all import rdpcap
-            
-            progress.setLabelText("Reading PCAP file...")
-            QApplication.processEvents()
-            
-            # Read PCAP file with error handling
-            try:
-                packets = rdpcap(file_path)
-                total_packets = len(packets)
-                logger.info(f"Successfully read {total_packets} packets from {file_path}")
-            except Exception as e:
-                logger.error(f"Failed to read PCAP file {file_path}: {e}")
-                raise Exception(f"Failed to read PCAP file: {e}")
-            
-            if total_packets == 0:
-                logger.warning("PCAP file contains no packets")
-                QMessageBox.warning(self, "Empty File", "The PCAP file contains no packets.")
-                return
-            
-            progress.setMaximum(total_packets)
-            progress.setLabelText(f"Processing {total_packets} packets...")
-            
-            # Clear existing packets
-            self.captured_packets.clear()
-            
-            # Process each packet with error handling
-            successful_packets = 0
-            failed_packets = 0
-            
-            for i, packet in enumerate(packets):
-                if progress.wasCanceled():
-                    logger.info("PCAP load canceled by user")
-                    return
-                
-                try:
-                    # Process the packet using existing packet processing logic
-                    packet_info = self._process_scapy_packet(packet, i + 1)
-                    if packet_info:
-                        self.captured_packets.append(packet_info)
-                        successful_packets += 1
-                    else:
-                        failed_packets += 1
-                        logger.warning(f"Failed to process packet {i + 1}")
-                except Exception as e:
-                    failed_packets += 1
-                    logger.error(f"Error processing packet {i + 1}: {e}")
-                    # Continue processing other packets instead of crashing
-                    continue
-                
-                # Update progress every 100 packets
-                if i % 100 == 0:
-                    progress.setValue(i)
-                    progress.setLabelText(f"Processing {i}/{total_packets} packets... (Success: {successful_packets}, Failed: {failed_packets})")
-                    QApplication.processEvents()
-            
-            progress.setValue(total_packets)
-            
-            # Log results
-            logger.info(f"PCAP processing complete: {successful_packets} successful, {failed_packets} failed")
-            
-            # Show warning if some packets failed
-            if failed_packets > 0:
-                QMessageBox.warning(self, "Processing Warning", 
-                                   f"Processed {successful_packets} packets successfully.\n{failed_packets} packets failed to process.")
-            
-        except Exception as e:
-            logger.error(f"Critical error in load_pcap_file: {e}")
-            raise Exception(f"Failed to load PCAP file: {e}")
-    
-    def load_csv_file(self, file_path, progress):
-        """Load packets from a CSV file"""
-        import csv
-        
-        progress.setLabelText("Reading CSV file...")
-        QApplication.processEvents()
-        
-        # Clear existing packets
-        self.captured_packets.clear()
-        
-        # Read CSV file
-        with open(file_path, 'r', encoding='utf-8') as f:
-            # First pass: count rows
-            reader = csv.reader(f)
-            total_rows = sum(1 for row in reader) - 1  # Subtract header row
-            
-            # Reset file pointer
-            f.seek(0)
-            
-            progress.setMaximum(total_rows)
-            progress.setLabelText(f"Processing {total_rows} packets...")
-            
-            # Second pass: process data
-            reader = csv.DictReader(f)
-            
-            for i, row in enumerate(reader):
-                if progress.wasCanceled():
-                    logger.info("CSV load canceled by user")
-                    return
-                
-                # Convert CSV row to packet format
-                packet_info = self._csv_row_to_packet(row, i + 1)
-                if packet_info:
-                    self.captured_packets.append(packet_info)
-                
-                # Update progress every 100 packets
-                if i % 100 == 0:
-                    progress.setValue(i)
-                    QApplication.processEvents()
-            
-            progress.setValue(total_rows)
-    
-    def load_json_file(self, file_path, progress):
-        """Load packets from a JSON file"""
-        import json
-        
-        progress.setLabelText("Reading JSON file...")
-        QApplication.processEvents()
-        
-        # Read JSON file
-        with open(file_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        
-        if not isinstance(data, list):
-            raise ValueError("JSON file must contain a list of packets")
-        
-        total_packets = len(data)
-        progress.setMaximum(total_packets)
-        progress.setLabelText(f"Processing {total_packets} packets...")
-        
-        # Clear existing packets
-        self.captured_packets.clear()
-        
-        # Process each packet
-        for i, packet_data in enumerate(data):
-            if progress.wasCanceled():
-                logger.info("JSON load canceled by user")
-                return
-            
-            # Add frame number if not present
-            if 'frame_number' not in packet_data:
-                packet_data['frame_number'] = i + 1
-            
-            # Ensure required fields are present
-            packet_info = self._normalize_packet_data(packet_data)
-            self.captured_packets.append(packet_info)
-            
-            # Update progress every 100 packets
-            if i % 100 == 0:
-                progress.setValue(i)
-                QApplication.processEvents()
-        
-        progress.setValue(total_packets)
-    
-    def _process_scapy_packet(self, packet, frame_number):
-        """Process a scapy packet object into our packet format with enhanced error handling"""
-        try:
-            # Basic packet metadata
-            metadata = {
-                "frame_number": frame_number,
-                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f"),
-                "size": len(packet),
-                "layers": [],
-                "packet_data": bytes(packet) if hasattr(packet, '__bytes__') else str(packet)
-            }
-            
-            # Extract Ethernet layer metadata safely
-            try:
-                if Ether in packet and packet.haslayer(Ether):
-                    eth_layer = packet[Ether]
-                    metadata.update({
-                        "mac_src": str(eth_layer.src) if hasattr(eth_layer, 'src') else "Unknown",
-                        "mac_dst": str(eth_layer.dst) if hasattr(eth_layer, 'dst') else "Unknown",
-                        "eth_type": int(eth_layer.type) if hasattr(eth_layer, 'type') else 0
-                    })
-                    metadata["layers"].append("Ethernet")
-            except Exception as e:
-                logger.warning(f"Error extracting Ethernet layer from packet {frame_number}: {e}")
-            
-            # Extract IP layer metadata safely
-            try:
-                if IP in packet and packet.haslayer(IP):
-                    ip_layer = packet[IP]
-                    metadata.update({
-                        "src_ip": str(ip_layer.src) if hasattr(ip_layer, 'src') else "Unknown",
-                        "dst_ip": str(ip_layer.dst) if hasattr(ip_layer, 'dst') else "Unknown",
-                        "ttl": int(ip_layer.ttl) if hasattr(ip_layer, 'ttl') else 0,
-                        "ip_id": int(ip_layer.id) if hasattr(ip_layer, 'id') else 0,
-                        "ip_len": int(ip_layer.len) if hasattr(ip_layer, 'len') else 0,
-                        "ip_version": 4
-                    })
-                    metadata["layers"].append("IPv4")
-            except Exception as e:
-                logger.warning(f"Error extracting IP layer from packet {frame_number}: {e}")
-            
-            # Extract transport layer metadata safely
-            try:
-                if TCP in packet and packet.haslayer(TCP):
-                    tcp_layer = packet[TCP]
-                    metadata.update({
-                        "protocol": "TCP",
-                        "src_port": int(tcp_layer.sport) if hasattr(tcp_layer, 'sport') else 0,
-                        "dst_port": int(tcp_layer.dport) if hasattr(tcp_layer, 'dport') else 0,
-                        "seq": int(tcp_layer.seq) if hasattr(tcp_layer, 'seq') else 0,
-                        "ack": int(tcp_layer.ack) if hasattr(tcp_layer, 'ack') else 0,
-                        "window": int(tcp_layer.window) if hasattr(tcp_layer, 'window') else 0
-                    })
-                    
-                    # Extract TCP flags safely
-                    try:
-                        flags = []
-                        if hasattr(tcp_layer, 'flags'):
-                            flags_value = int(tcp_layer.flags)
-                            if flags_value & 0x01: flags.append("FIN")
-                            if flags_value & 0x02: flags.append("SYN")
-                            if flags_value & 0x04: flags.append("RST")
-                            if flags_value & 0x08: flags.append("PSH")
-                            if flags_value & 0x10: flags.append("ACK")
-                            if flags_value & 0x20: flags.append("URG")
-                            if flags_value & 0x40: flags.append("ECE")
-                            if flags_value & 0x80: flags.append("CWR")
-                        
-                        metadata["tcp_flags"] = flags
-                    except Exception as e:
-                        logger.warning(f"Error extracting TCP flags from packet {frame_number}: {e}")
-                        metadata["tcp_flags"] = []
-                    
-                    metadata["layers"].append("TCP")
-                    
-                elif UDP in packet and packet.haslayer(UDP):
-                    udp_layer = packet[UDP]
-                    metadata.update({
-                        "protocol": "UDP",
-                        "src_port": int(udp_layer.sport) if hasattr(udp_layer, 'sport') else 0,
-                        "dst_port": int(udp_layer.dport) if hasattr(udp_layer, 'dport') else 0
-                    })
-                    metadata["layers"].append("UDP")
-                    
-                    # Check for DNS safely
-                    try:
-                        if DNS in packet and packet.haslayer(DNS):
-                            metadata["layers"].append("DNS")
-                    except Exception as e:
-                        logger.warning(f"Error checking DNS layer in packet {frame_number}: {e}")
-                        
-                elif ICMP in packet and packet.haslayer(ICMP):
-                    icmp_layer = packet[ICMP]
-                    metadata.update({
-                        "protocol": "ICMP",
-                        "icmp_type": int(icmp_layer.type) if hasattr(icmp_layer, 'type') else 0,
-                        "icmp_code": int(icmp_layer.code) if hasattr(icmp_layer, 'code') else 0
-                    })
-                    metadata["layers"].append("ICMP")
-                    
-            except Exception as e:
-                logger.warning(f"Error extracting transport layer from packet {frame_number}: {e}")
-            
-            # Generate summary safely
-            try:
-                metadata["summary"] = self._generate_packet_summary(metadata)
-            except Exception as e:
-                logger.warning(f"Error generating summary for packet {frame_number}: {e}")
-                metadata["summary"] = f"Packet {frame_number} (Error generating summary)"
-            
-            return metadata
-            
-        except Exception as e:
-            logger.error(f"Critical error processing scapy packet {frame_number}: {e}")
-            # Return a minimal packet info instead of None to prevent crashes
-            return {
-                "frame_number": frame_number,
-                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f"),
-                "size": 0,
-                "layers": ["Error"],
-                "summary": f"Packet {frame_number} (Processing Error: {e})",
-                "error": str(e)
-            }
-    
-    def _csv_row_to_packet(self, row, frame_number):
-        """Convert a CSV row to packet format"""
-        try:
-            packet_info = {
-                "frame_number": frame_number,
-                "timestamp": row.get("timestamp", datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")),
-                "src_ip": row.get("src_ip", ""),
-                "dst_ip": row.get("dst_ip", ""),
-                "src_port": int(row.get("src_port", 0)) if row.get("src_port") and row.get("src_port").isdigit() else 0,
-                "dst_port": int(row.get("dst_port", 0)) if row.get("dst_port") and row.get("dst_port").isdigit() else 0,
-                "protocol": row.get("protocol", "UNKNOWN"),
-                "size": int(row.get("size", 0)) if row.get("size") and row.get("size").isdigit() else 0,
-                "summary": row.get("summary", ""),
-                "layers": []
-            }
-            
-            # Determine layers based on protocol
-            if packet_info["protocol"] == "TCP":
-                packet_info["layers"] = ["Ethernet", "IPv4", "TCP"]
-            elif packet_info["protocol"] == "UDP":
-                packet_info["layers"] = ["Ethernet", "IPv4", "UDP"]
-            elif packet_info["protocol"] == "ICMP":
-                packet_info["layers"] = ["Ethernet", "IPv4", "ICMP"]
-            
-            # Generate summary if not present
-            if not packet_info["summary"]:
-                packet_info["summary"] = self._generate_packet_summary(packet_info)
-            
-            return packet_info
-            
-        except Exception as e:
-            logger.error(f"Error converting CSV row to packet: {e}")
-            return None
-    
-    def _normalize_packet_data(self, packet_data):
-        """Normalize packet data to ensure consistent format"""
-        # Ensure required fields are present
-        normalized = {
-            "frame_number": packet_data.get("frame_number", 1),
-            "timestamp": packet_data.get("timestamp", datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")),
-            "src_ip": packet_data.get("src_ip", ""),
-            "dst_ip": packet_data.get("dst_ip", ""),
-            "src_port": packet_data.get("src_port", 0),
-            "dst_port": packet_data.get("dst_port", 0),
-            "protocol": packet_data.get("protocol", "UNKNOWN"),
-            "size": packet_data.get("size", 0),
-            "summary": packet_data.get("summary", ""),
-            "layers": packet_data.get("layers", [])
-        }
-        
-        # Copy any additional fields
-        for key, value in packet_data.items():
-            if key not in normalized:
-                normalized[key] = value
-        
-        # Generate summary if not present
-        if not normalized["summary"]:
-            normalized["summary"] = self._generate_packet_summary(normalized)
-        
-        return normalized
-    
-    def _generate_packet_summary(self, packet_info):
-        """Generate a summary string for a packet"""
-        try:
-            protocol = packet_info.get("protocol", "UNKNOWN")
-            src_ip = packet_info.get("src_ip", "")
-            dst_ip = packet_info.get("dst_ip", "")
-            src_port = packet_info.get("src_port", "")
-            dst_port = packet_info.get("dst_port", "")
-            size = packet_info.get("size", 0)
-            
-            if protocol in ["TCP", "UDP"] and src_port and dst_port:
-                return f"{protocol} {src_ip}:{src_port} → {dst_ip}:{dst_port} [{size} bytes]"
-            elif src_ip and dst_ip:
-                return f"{protocol} {src_ip} → {dst_ip} [{size} bytes]"
-            else:
-                return f"{protocol} packet [{size} bytes]"
-                
-        except Exception as e:
-            logger.error(f"Error generating packet summary: {e}")
-            return "Unknown packet"
-    
-    def save_ui_state(self):
-        """Save UI state including splitter positions"""
-        try:
-            settings = QSettings("PyGuard", "DesktopApp")
-            
-            # Save window geometry
-            settings.setValue("geometry", self.saveGeometry())
-            
-            # Save splitter states
-            settings.setValue("main_splitter", self.main_splitter.saveState())
-            settings.setValue("details_splitter", self.details_splitter.saveState())
-            settings.setValue("horizontal_details_splitter", self.horizontal_details_splitter.saveState())
-            
-            logger.info("UI state saved.")
-        except Exception as e:
-            logger.error(f"Error saving UI state: {e}")
 
-    def load_ui_state(self):
-        """Load UI state including splitter positions"""
-        try:
-            settings = QSettings("PyGuard", "DesktopApp")
-            
-            # Load window geometry
-            geometry = settings.value("geometry")
-            if geometry:
-                self.restoreGeometry(geometry)
-            
-            # Load splitter states
-            main_splitter_state = settings.value("main_splitter")
-            if main_splitter_state:
-                self.main_splitter.restoreState(main_splitter_state)
-            else:
-                # Set default sizes if no state is saved
-                self.main_splitter.setSizes([400, 400])
-
-            details_splitter_state = settings.value("details_splitter")
-            if details_splitter_state:
-                self.details_splitter.restoreState(details_splitter_state)
-            else:
-                self.details_splitter.setSizes([600, 200])
-
-            horizontal_details_splitter_state = settings.value("horizontal_details_splitter")
-            if horizontal_details_splitter_state:
-                self.horizontal_details_splitter.restoreState(horizontal_details_splitter_state)
-            else:
-                self.horizontal_details_splitter.setSizes([400, 400])
-
-            logger.info("UI state loaded.")
-        except Exception as e:
-            logger.error(f"Error loading UI state: {e}")
-
-    def closeEvent(self, event):
-        """Handle window close event"""
-        self.save_ui_state()
-        self.stop_capture()
-        event.accept()
 
 def main():
-    """Main function to run the desktop application"""
+    """Main entry point for the PyGuard Desktop Application"""
+    import sys
+
     app = QApplication(sys.argv)
-    
-    # Create and show the main window
     window = DesktopApp()
     window.show()
-    
-    # Execute the application
     return app.exec_()
-
-if __name__ == "__main__":
-    # Run the main function when this file is executed directly
-    sys.exit(main())

@@ -39,13 +39,13 @@ def main():
     
     # Check if we're in virtual environment
     if not check_virtual_environment():
-        print("⚠️  Not running in virtual environment")
+        print("[!] Not running in virtual environment")
         print("Attempting to activate virtual environment...")
         
         if activate_virtual_environment():
-            print("✅ Virtual environment activated")
+            print("[OK] Virtual environment activated")
         else:
-            print("❌ Failed to activate virtual environment")
+            print("[X] Failed to activate virtual environment")
             print("\nPlease run this script from the virtual environment:")
             print("1. Open PowerShell in the project directory")
             print("2. Run: .\\venv\\Scripts\\Activate.ps1")
@@ -60,12 +60,12 @@ def main():
     try:
         # Try to import PyQt5 first to verify it's available
         import PyQt5
-        print(f"✅ PyQt5 available")
+        print("[OK] PyQt5 available")
         
         # Now import and run the desktop app
         from desktop_app.desktop_app import main as desktop_main
-        print("✅ Desktop app imported successfully")
-        print("🚀 Starting PyGuard Desktop Application...")
+        print("[OK] Desktop app imported successfully")
+        print("[>] Starting PyGuard Desktop Application...")
         
         # Setup basic logging
         logging.basicConfig(
@@ -84,7 +84,7 @@ def main():
         return desktop_main()
         
     except ImportError as e:
-        print(f"❌ Import error: {e}")
+        print(f"[X] Import error: {e}")
         print("\nThis usually means PyQt5 is not available.")
         print("Please ensure you're running from the virtual environment:")
         print("1. Open PowerShell in the project directory")
@@ -94,7 +94,7 @@ def main():
         return 1
         
     except Exception as e:
-        print(f"❌ Unexpected error: {e}")
+        print(f"[X] Unexpected error: {e}")
         print("\nPlease check the error details above.")
         input("\nPress Enter to exit...")
         return 1

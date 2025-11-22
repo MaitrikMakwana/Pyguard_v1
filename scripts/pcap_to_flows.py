@@ -441,7 +441,24 @@ class PcapToFlowConverter:
             'Subflow_Fwd_Byts': total_fwd_bytes,
             'Subflow_Bwd_Pkts': total_bwd_packets,
             'Subflow_Bwd_Byts': total_bwd_bytes,
-            
+
+            # Additional CIC-IDS features
+            'Down/Up_Ratio': total_bwd_packets / total_fwd_packets if total_fwd_packets > 0 else 0,
+            'Average_Packet_Size': (total_fwd_bytes + total_bwd_bytes) / (total_fwd_packets + total_bwd_packets) if (total_fwd_packets + total_bwd_packets) > 0 else 0,
+            'Avg_Fwd_Segment_Size': np.mean([p['payload_size'] for p in forward_packets]) if forward_packets else 0,
+            'Avg_Bwd_Segment_Size': np.mean([p['payload_size'] for p in backward_packets]) if backward_packets else 0,
+
+            # Bulk transfer features (simplified - would need more sophisticated implementation for full CIC compliance)
+            'Fwd_Avg_Bytes/Bulk': 0,  # Placeholder - requires bulk transfer detection
+            'Fwd_Avg_Packets/Bulk': 0,  # Placeholder
+            'Fwd_Avg_Bulk_Rate': 0,     # Placeholder
+            'Bwd_Avg_Bytes/Bulk': 0,    # Placeholder
+            'Bwd_Avg_Packets/Bulk': 0,  # Placeholder
+            'Bwd_Avg_Bulk_Rate': 0,     # Placeholder
+
+            # Active data packets forward
+            'act_data_pkt_fwd': len([p for p in forward_packets if p['payload_size'] > 0]),
+
             # Active/Idle time features (simplified)
             'Active_Mean': flow_duration / 2 if flow_duration > 0 else 0,
             'Active_Std': flow_duration / 4 if flow_duration > 0 else 0,
@@ -451,7 +468,7 @@ class PcapToFlowConverter:
             'Idle_Std': 0,
             'Idle_Max': 0,
             'Idle_Min': 0,
-            
+
             # Label (default to BENIGN for unsupervised data)
             'Label': 'BENIGN'
         }
@@ -478,27 +495,53 @@ class PcapToFlowConverter:
     
     def export_to_csv(self, output_file):
         """
-        Export flow features to CSV file
-        
+        Export flow features to CSV file in CIC-IDS format
+
         Args:
             output_file: Path to output CSV file
         """
         if not self.flow_features:
             logger.error("No flow features to export")
             return False
-        
+
         try:
             # Create DataFrame
             df = pd.DataFrame(self.flow_features)
-            
-            # Sort columns for better readability
-            id_cols = ['Flow_ID', 'Src_IP', 'Dst_IP', 'Src_Port', 'Dst_Port', 'Protocol']
-            time_cols = ['Timestamp', 'Flow_Start_Time', 'Flow_End_Time', 'Flow_Duration']
-            other_cols = [col for col in df.columns if col not in id_cols + time_cols]
-            
-            # Reorder columns
-            ordered_cols = id_cols + time_cols + sorted(other_cols)
-            df = df[ordered_cols]
+
+            # Define exact CIC-IDS column order for ML compatibility
+            cic_columns = [
+                'Flow_ID', 'Src_IP', 'Src_Port', 'Dst_IP', 'Dst_Port', 'Protocol',
+                'Timestamp', 'Flow_Duration', 'Tot_Fwd_Pkts', 'Tot_Bwd_Pkts',
+                'TotLen_Fwd_Pkts', 'TotLen_Bwd_Pkts', 'Fwd_Pkt_Len_Max', 'Fwd_Pkt_Len_Min',
+                'Fwd_Pkt_Len_Mean', 'Fwd_Pkt_Len_Std', 'Bwd_Pkt_Len_Max', 'Bwd_Pkt_Len_Min',
+                'Bwd_Pkt_Len_Mean', 'Bwd_Pkt_Len_Std', 'Flow_Byts/s', 'Flow_Pkts/s',
+                'Flow_IAT_Mean', 'Flow_IAT_Std', 'Flow_IAT_Max', 'Flow_IAT_Min',
+                'Fwd_IAT_Tot', 'Fwd_IAT_Mean', 'Fwd_IAT_Std', 'Fwd_IAT_Max', 'Fwd_IAT_Min',
+                'Bwd_IAT_Tot', 'Bwd_IAT_Mean', 'Bwd_IAT_Std', 'Bwd_IAT_Max', 'Bwd_IAT_Min',
+                'Fwd_PSH_Flags', 'Bwd_PSH_Flags', 'Fwd_URG_Flags', 'Bwd_URG_Flags',
+                'Fwd_Header_Len', 'Bwd_Header_Len', 'Fwd_Pkts/s', 'Bwd_Pkts/s',
+                'Pkt_Len_Min', 'Pkt_Len_Max', 'Pkt_Len_Mean', 'Pkt_Len_Std', 'Pkt_Len_Var',
+                'FIN_Flag_Cnt', 'SYN_Flag_Cnt', 'RST_Flag_Cnt', 'PSH_Flag_Cnt',
+                'ACK_Flag_Cnt', 'URG_Flag_Cnt', 'CWE_Flag_Count', 'ECE_Flag_Cnt',
+                'Down/Up_Ratio', 'Average_Packet_Size', 'Avg_Fwd_Segment_Size', 'Avg_Bwd_Segment_Size',
+                'Fwd_Avg_Bytes/Bulk', 'Fwd_Avg_Packets/Bulk', 'Fwd_Avg_Bulk_Rate',
+                'Bwd_Avg_Bytes/Bulk', 'Bwd_Avg_Packets/Bulk', 'Bwd_Avg_Bulk_Rate',
+                'Subflow_Fwd_Pkts', 'Subflow_Fwd_Byts', 'Subflow_Bwd_Pkts', 'Subflow_Bwd_Byts',
+                'Init_Win_bytes_forward', 'Init_Win_bytes_backward', 'act_data_pkt_fwd',
+                'Min_Seg_Size_Forward', 'Active_Mean', 'Active_Std', 'Active_Max', 'Active_Min',
+                'Idle_Mean', 'Idle_Std', 'Idle_Max', 'Idle_Min', 'Label'
+            ]
+
+            # Ensure all CIC columns exist (add missing ones with default values)
+            for col in cic_columns:
+                if col not in df.columns:
+                    if col in ['Flow_Start_Time', 'Flow_End_Time']:
+                        df[col] = ''  # These are optional timing fields
+                    else:
+                        df[col] = 0  # Default to 0 for numeric features
+
+            # Reorder columns to exact CIC format
+            df = df[cic_columns]
             
             # Export to CSV
             df.to_csv(output_file, index=False)
