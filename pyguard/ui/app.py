@@ -217,13 +217,42 @@ class MainWindow(QMainWindow):
         # Right: Tab Widget for analysis/info
         right_panel = QTabWidget()
         right_panel.setStyleSheet("QTabWidget::pane { border: 1px solid #444; border-radius: 5px; } QTabBar::tab { background: #222; color: #fff; padding: 12px; font-size: 12pt; border-radius: 5px; margin: 2px; }")
-        # Packet Analysis Tab
-        self.analysis_tab = QWidget()
-        analysis_layout = QVBoxLayout(self.analysis_tab)
-        self.analysis_label = QLabel("Packet Analysis will be shown here.")
-        self.analysis_label.setWordWrap(True)
-        analysis_layout.addWidget(self.analysis_label)
-        right_panel.addTab(self.analysis_tab, "Packet Analysis")
+        # ML Analysis Tab (minimal)
+        self.ml_analysis_tab = QWidget()
+        ml_layout = QVBoxLayout(self.ml_analysis_tab)
+        # Controls row
+        controls_row = QHBoxLayout()
+        self.ml_run_btn = QPushButton("Run on CSV…")
+        self.ml_live_check = QCheckBox("Live Mode")
+        self.ml_export_btn = QPushButton("Export Last Predictions…")
+        controls_row.addWidget(self.ml_run_btn)
+        controls_row.addWidget(self.ml_live_check)
+        controls_row.addStretch(1)
+        controls_row.addWidget(self.ml_export_btn)
+        ml_layout.addLayout(controls_row)
+        # Summary
+        self.ml_summary_label = QLabel("ML: waiting for predictions…")
+        self.ml_summary_label.setWordWrap(True)
+        ml_layout.addWidget(self.ml_summary_label)
+        # Distribution
+        self.ml_dist_table = QTableWidget()
+        self.ml_dist_table.setColumnCount(2)
+        self.ml_dist_table.setHorizontalHeaderLabels(["Label", "Count"])
+        ml_layout.addWidget(self.ml_dist_table)
+        # Recent predictions table
+        self.ml_recent_table = QTableWidget()
+        ml_layout.addWidget(self.ml_recent_table)
+        # Live updates via polling
+        self.ml_live_timer = QTimer()
+        self.ml_live_timer.timeout.connect(self._update_ml_live_summary)
+        self.ml_live_timer.start(5000)
+        # Wire handlers
+        self.ml_run_btn.clicked.connect(self._run_ml_on_csv)
+        self.ml_export_btn.clicked.connect(self._export_latest_predictions)
+        self.ml_live_check.toggled.connect(self._toggle_live_mode)
+        right_panel.addTab(self.ml_analysis_tab, "ML Analysis")
+
+
         # Captured Packets Tab
         self.captured_tab = QWidget()
         captured_layout = QVBoxLayout(self.captured_tab)
@@ -797,3 +826,186 @@ def start_gui(config, capture_manager):
     window = MainWindow(config, capture_manager)
     window.show()
     return app.exec_()
+
+    def _toggle_live_mode(self, enabled: bool):
+        try:
+            if enabled:
+                if not self.ml_live_timer.isActive():
+                    self.ml_live_timer.start(5000)
+            else:
+                if self.ml_live_timer.isActive():
+                    self.ml_live_timer.stop()
+        except Exception:
+            pass
+
+    def _run_ml_on_csv(self):
+        try:
+            from PyQt6.QtWidgets import QFileDialog, QTableWidgetItem
+            file_path, _ = QFileDialog.getOpenFileName(self, "Select Flow CSV", "", "CSV Files (*.csv)")
+            if not file_path:
+                return
+            from pyguard.core import MLInferenceService
+            results_df = MLInferenceService().predict_from_csv(file_path)
+            # Cache and display
+            self._ml_last_results = results_df
+            self.ml_recent_table.clear()
+            self.ml_recent_table.setRowCount(len(results_df))
+            self.ml_recent_table.setColumnCount(len(results_df.columns))
+            self.ml_recent_table.setHorizontalHeaderLabels(list(results_df.columns))
+            for i, row in results_df.iterrows():
+                for j, val in enumerate(row):
+                    self.ml_recent_table.setItem(i, j, QTableWidgetItem(str(val)))
+            self.ml_recent_table.resizeColumnsToContents()
+            # Update summary/hist
+            if 'Predicted_Label' in results_df.columns:
+                counts = results_df['Predicted_Label'].value_counts()
+                total = int(counts.sum())
+                avg_conf = float(results_df['Confidence'].mean()) if 'Confidence' in results_df.columns else 0.0
+                self.ml_summary_label.setText(f"Total samples: {total} | Avg confidence: {avg_conf:.4f}")
+                self.ml_dist_table.setRowCount(len(counts))
+                self.ml_dist_table.setColumnCount(2)
+                self.ml_dist_table.setHorizontalHeaderLabels(["Label", "Count"])
+                for r, (label, cnt) in enumerate(counts.items()):
+                    self.ml_dist_table.setItem(r, 0, QTableWidgetItem(str(label)))
+                    self.ml_dist_table.setItem(r, 1, QTableWidgetItem(str(int(cnt))))
+                self.ml_dist_table.resizeColumnsToContents()
+        except Exception:
+            pass
+
+    def _export_latest_predictions(self):
+        try:
+            from PyQt6.QtWidgets import QFileDialog
+            import pandas as pd
+            df = getattr(self, '_ml_last_results', None)
+            if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+                return
+            out_path, _ = QFileDialog.getSaveFileName(self, "Save Predictions CSV", "predictions.csv", "CSV Files (*.csv)")
+            if not out_path:
+                return
+            df.to_csv(out_path, index=False)
+        except Exception:
+            pass
+
+    def show_color_legend(self):
+        """Show a compact color legend for the lighter UI (PyQt6).
+
+        This provides the same information as the desktop legend but in the
+        simpler PyGuard UI used by `pyguard/ui/app.py`.
+        """
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QTextBrowser, QScrollArea, QPushButton, QHBoxLayout, QLabel
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Packet Color Legend")
+        dialog.resize(520, 380)
+        layout = QVBoxLayout(dialog)
+
+        title = QLabel("Packet Color Legend")
+        title.setStyleSheet("font-weight: bold; font-size: 13pt;")
+        layout.addWidget(title)
+
+        html = (
+            "<style>.sw{display:inline-block;width:22px;height:14px;border:1px solid #999;margin-right:8px;}</style>"
+        )
+        html += (
+            "<div><span class='sw' style='background:#FFC8C8'></span><b>Error Packets</b>: Processing errors or malformed frames. (#FFC8C8)</div>"
+        )
+        html += ("<div><span class='sw' style='background:#D2E6FF'></span><b>HTTP</b>: Port 80 / HTTP layer (#D2E6FF)</div>")
+        html += ("<div><span class='sw' style='background:#B4D2FF'></span><b>HTTPS</b>: Port 443 / encrypted traffic (#B4D2FF)</div>")
+        html += ("<div><span class='sw' style='background:#E6D2FF'></span><b>DNS</b>: DNS queries/responses (#E6D2FF)</div>")
+        html += ("<div><span class='sw' style='background:#FFFFC8'></span><b>ICMP</b>: Ping and ICMP messages (#FFFFC8)</div>")
+        html += ("<div><span class='sw' style='background:#D2FFD2'></span><b>ARP</b>: ARP frames (#D2FFD2)</div>")
+        html += ("<div><span class='sw' style='background:#F0F8FF'></span><b>TCP (other)</b>: Other TCP traffic (#F0F8FF)</div>")
+        html += ("<div><span class='sw' style='background:#F0FFF0'></span><b>UDP (other)</b>: Other UDP traffic (#F0FFF0)</div>")
+
+        browser = QTextBrowser()
+        browser.setHtml(html)
+        browser.setMinimumHeight(220)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(browser)
+        layout.addWidget(scroll)
+
+        btns = QHBoxLayout()
+        copy = QPushButton("Copy Legend")
+        def _copy():
+            from PyQt6.QtWidgets import QApplication
+            QApplication.clipboard().setText(browser.toPlainText())
+            try:
+                self.statusBar().showMessage("Legend copied to clipboard")
+            except Exception:
+                pass
+        copy.clicked.connect(_copy)
+        btns.addWidget(copy)
+        btns.addStretch(1)
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(dialog.reject)
+        btns.addWidget(close_btn)
+        layout.addLayout(btns)
+
+        dialog.setLayout(layout)
+        dialog.exec()
+
+    def show_filter_help(self):
+        """Show filter help for the lightweight UI (PyQt6).
+
+        Presents both BPF capture examples and advanced (post-capture) examples,
+        with a button to copy the examples to clipboard.
+        """
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QTextBrowser, QScrollArea, QPushButton, QHBoxLayout, QApplication
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Filter Help")
+        dialog.resize(660, 480)
+        layout = QVBoxLayout(dialog)
+
+        html = """
+        <h3>BPF (capture-time) examples</h3>
+        <pre>
+tcp
+udp
+icmp
+host 192.168.1.10
+port 80
+portrange 1024-2048
+net 192.168.0.0/16
+tcp and (dst port 80 or dst port 443)
+        </pre>
+        <h3>Advanced (post-capture) examples</h3>
+        <pre>
+protocol == 'TCP' and dst_port == 443
+'HTTP' in layers and dst_port == 80
+(src_ip == '10.0.0.5' or dst_ip == '10.0.0.5') and (dst_port == 22 or src_port == 22)
+size >= 1500
+'DNS' in layers and size < 200
+        </pre>
+        <p>Tip: Use BPF to reduce captured data; then refine with Advanced Filters inside the app.</p>
+        """
+
+        browser = QTextBrowser()
+        browser.setHtml(html)
+        browser.setMinimumHeight(320)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(browser)
+        layout.addWidget(scroll, 1)
+
+        btn_layout = QHBoxLayout()
+        copy_btn = QPushButton("Copy Examples")
+        def _copy_examples():
+            examples = (
+                "tcp\nudp\nicmp\nhost 192.168.1.10\nport 80\nportrange 1024-2048\n\n"
+                "Advanced:\nprotocol == 'TCP' and dst_port == 443\n'HTTP' in layers and dst_port == 80\nsize >= 1500"
+            )
+            QApplication.clipboard().setText(examples)
+            try:
+                self.statusBar().showMessage("Filter examples copied to clipboard")
+            except Exception:
+                pass
+        copy_btn.clicked.connect(_copy_examples)
+        btn_layout.addWidget(copy_btn)
+        btn_layout.addStretch(1)
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(dialog.reject)
+        btn_layout.addWidget(close_btn)
+        layout.addLayout(btn_layout)
+
+        dialog.setLayout(layout)
+        dialog.exec()

@@ -1,225 +1,296 @@
 
 # PyGuard - Modern Network Traffic Metadata Capture & Analysis
 
-PyGuard is a desktop application for capturing, analyzing, and storing network traffic metadata. It features a modern PyQt6 UI with sidebar navigation, real-time protocol stats, advanced filtering, and color-coded packet tables.
+[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Virtual Environment](https://img.shields.io/badge/Virtual%20Environment-✅-green.svg)](https://docs.python.org/3/library/venv.html)
 
-## Features
+PyGuard is a comprehensive desktop application for capturing, analyzing, and storing network traffic metadata. It features a modern PyQt5 UI with sidebar navigation, real-time protocol stats, advanced filtering, and color-coded packet tables. **Now with full virtual environment support and easy launching!**
 
-- **High-Performance Packet Capture**: Efficient capture and processing using pcapy-ng and scapy
-- **Comprehensive Metadata Extraction**: IP, ports, protocols, timestamps, flags, app-layer data, MAC, ICMP, ARP, etc.
-- **Flexible Storage**: PCAP files, PostgreSQL database, CSV/Parquet export
-- **Scalable Architecture**: Multi-threaded, async storage, efficient memory management
-- **System Resource Monitoring**: Real-time CPU/memory stats
-- **Modern Desktop UI**:
+## 🚀 **Quick Start**
+
+### **Option 1: Double-click Launch (Easiest)**
+```bash
+# Simply double-click this file:
+desktop_app\run_desktop_app.bat
+```
+
+### **Option 2: PowerShell Launch**
+```bash
+# Activate virtual environment and run:
+.\venv\Scripts\Activate.ps1
+python desktop_app\run_desktop_app.py
+```
+
+### **Option 3: Main Application**
+```bash
+# Activate virtual environment and run main app:
+.\venv\Scripts\Activate.ps1
+python run_in_venv.py
+```
+
+## ✨ **Features**
+
+- **🚀 High-Performance Packet Capture**: Efficient capture using Scapy and optimized processing
+- **📊 Comprehensive Metadata Extraction**: IP, ports, protocols, timestamps, flags, app-layer data, MAC, ICMP, ARP
+- **💾 Flexible Storage**: PCAP files, PostgreSQL database, CSV/Parquet export, JSON storage
+- **⚡ Scalable Architecture**: Multi-threaded, async storage, efficient memory management
+- **🖥️ System Resource Monitoring**: Real-time CPU/memory stats with alerts
+- **🎨 Modern Desktop UI**:
   - Sidebar navigation (Capture, Settings, Statistics)
   - Right-side tabs for Packet Analysis, Captured Packets, Advanced Filter, Info
   - Color-coded, sortable packet table
   - Collapsible log viewer
   - Dark/light mode switching
   - Tooltips and responsive layout
+- **🔒 Virtual Environment**: Fully isolated dependencies, no system conflicts
+- **📱 Easy Launching**: Multiple launcher options for different use cases
 
-## Requirements
+## 🏗️ **Project Structure**
 
-- Python 3.8 or higher
-- PostgreSQL (optional)
-- Npcap (Windows) or libpcap (Linux/macOS)
-- See `requirements.txt`
-
-## Installation
-
-1. Install system dependencies:
-   - **Windows**: [Npcap](https://npcap.com/#download)
-   - **Linux**: `sudo apt-get install libpcap-dev`
-   - **macOS**: `brew install libpcap`
-2. Clone the repo:
-   ```bash
-   git clone https://github.com/yourusername/pyguard.git
-   cd pyguard
-   ```
-3. (Optional) Create a virtual environment:
-   ```bash
-   python -m venv venv
-   source venv/bin/activate  # Windows: venv\Scripts\activate
-   ```
-4. Install Python packages:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-## Running the Desktop App
-
-1. Start the desktop app:
-   ```bash
-   python desktop_app/run_desktop_app.py
-   ```
-2. Use the sidebar to switch between Capture, Settings, and Statistics.
-3. View captured packets in the left table; analyze details in right-side tabs.
-
-## Configuration
-
-Edit `config.yaml` for custom settings (interface, database, storage, etc).
-
-## Contributing
-
-1. Fork the repo
-2. Create a branch
-3. Submit a pull request
-
-## License
-
-MIT
-
-## Requirements
-
-- Python 3.8 or higher
-- PostgreSQL database (optional, for metadata storage)
-- Npcap (Windows) or libpcap (Linux/macOS)
-- Required Python packages (see `requirements.txt`)
-
-## Installation
-
-1. Install the required system dependencies:
-   - **Windows**: Install [Npcap](https://npcap.com/#download)
-   - **Linux**: Install libpcap (`sudo apt-get install libpcap-dev` on Debian/Ubuntu)
-   - **macOS**: Install libpcap (`brew install libpcap`)
-
-2. Clone the repository:
-   ```bash
-   git clone https://github.com/yourusername/pyguard.git
-   cd pyguard
-   ```
-
-3. Create a virtual environment (optional but recommended):
-   ```bash
-   python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
-   ```
-
-4. Install the required Python packages:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-5. Install the package in development mode:
-   ```bash
-   pip install -e .
-   ```
-
-6. Set up the PostgreSQL database (optional):
-   ```bash
-   # Create database
-   createdb pyguard
-   
-   # Run schema setup script
-   python scripts/setup_database.py
-   ```
-
-## Usage
-
-### GUI Mode
-
-1. Start the application:
-   ```bash
-   python -m pyguard.main
-   ```
-
-2. Use the GUI to:
-   - Select the network interface to capture from
-   - Configure capture settings (BPF filter, promiscuous mode, etc.)
-   - Start and stop capture
-   - Monitor capture statistics and system resources
-
-### Command Line Mode
-
-1. Start the application in headless mode:
-   ```bash
-   python -m pyguard.main --no-gui --interface eth0 --output-dir /path/to/output
-   ```
-
-2. Additional command line options:
-   ```bash
-   python -m pyguard.main --help
-   ```
-
-## Configuration
-
-PyGuard can be configured using a YAML configuration file. A default configuration is created on first run, which you can modify as needed.
-
-Example configuration:
-```yaml
-version: 0.1.0
-interface: eth0
-output_dir: ./output
-pcap:
-  enabled: true
-  rotate_size_mb: 100
-  rotate_interval_minutes: 60
-  max_files: 10
-database:
-  enabled: true
-  type: postgresql
-  host: localhost
-  port: 5432
-  name: pyguard
-  user: postgres
-  password: postgres
-  batch_size: 1000
-  commit_interval: 5
-csv_export:
-  enabled: false
-  directory: ./csv_export
-  rotate_interval_minutes: 60
-  max_files: 10
-capture:
-  bpf_filter: ""
-  snaplen: 65535
-  promiscuous: true
-  buffer_size_mb: 100
-  batch_size: 1000
-  processing_threads: 4
-system:
-  memory_limit_percent: 80
-  cpu_limit_percent: 90
-  check_interval_seconds: 10
-log_level: INFO
-log_file: pyguard.log
+```
+PyGuard-main/
+├── 📁 venv/                           # Virtual environment (isolated dependencies)
+├── 📁 pyguard/                        # Core PyGuard package
+│   ├── 📁 core/                       # Core functionality
+│   │   ├── capture_manager.py         # Capture coordination
+│   │   ├── packet_capture.py          # Packet capture engine
+│   │   ├── packet_processor.py        # Packet processing & analysis
+│   │   └── config.py                  # Configuration management
+│   ├── 📁 storage/                    # Data storage modules
+│   │   ├── csv_storage.py             # CSV export functionality
+│   │   ├── database_storage.py        # PostgreSQL database storage
+│   │   └── json_storage.py            # JSON file storage
+│   ├── 📁 ui/                         # User interface
+│   │   └── app.py                     # Main UI application
+│   ├── 📁 utils/                      # Utility modules
+│   │   └── system_monitor.py          # System resource monitoring
+│   └── main.py                        # Main application entry point
+├── 📁 desktop_app/                    # Desktop application
+│   ├── desktop_app.py                 # Main desktop app (PyQt5)
+│   ├── run_desktop_app.py             # Enhanced launcher with VE support
+│   ├── run_desktop_app.bat            # Windows batch launcher
+│   └── __init__.py                    # Package initialization
+├── 📁 scripts/                        # Utility scripts
+│   ├── capture_traffic.py             # Traffic capture utilities
+│   ├── flow_analyzer.py               # Flow analysis tools
+│   ├── ml_workflow.py                 # Machine learning pipeline
+│   └── setup_database.py              # Database setup
+├── 📁 config/                         # Configuration files
+│   └── config.yaml                    # Main configuration
+├── 📁 examples/                       # Example files
+│   └── test4949.pcap                  # Sample PCAP file
+├── 📁 tests/                          # Test suite
+├── 📁 docs/                           # Documentation
+├── 🚀 run_in_venv.py                  # Main virtual environment launcher
+├── 🚀 activate_and_run.bat            # Windows batch launcher
+├── 🚀 activate_and_run.ps1            # PowerShell launcher
+├── 📋 requirements.txt                 # Python dependencies
+├── 📋 setup.py                        # Package setup
+└── 📋 README.md                       # This file
 ```
 
-## Architecture
+## 🔧 **Requirements**
 
-PyGuard is designed with a modular architecture to ensure scalability and maintainability:
+- **Python**: 3.8 or higher
+- **Operating System**: Windows 10/11, Linux, macOS
+- **System Dependencies**:
+  - **Windows**: [Npcap](https://npcap.com/#download) for packet capture
+  - **Linux**: `sudo apt-get install libpcap-dev`
+  - **macOS**: `brew install libpcap`
+- **Virtual Environment**: Automatically created and managed
 
-1. **Core Modules**:
-   - `packet_capture.py`: Handles raw packet capture using pcapy-ng
-   - `packet_processor.py`: Extracts metadata from captured packets
-   - `capture_manager.py`: Coordinates capture and processing workflows
-   - `config.py`: Manages application configuration
+## 🚀 **Installation & Setup**
 
-2. **Storage Modules**:
-   - `database_storage.py`: Stores metadata in PostgreSQL database
-   - `csv_storage.py`: Exports metadata to CSV/Parquet files
+### **1. Clone the Repository**
+```bash
+git clone https://github.com/yourusername/pyguard.git
+cd pyguard
+```
 
-3. **UI Modules**:
-   - `app.py`: Provides GUI interface using PyQt5
+### **2. Virtual Environment Setup (Automatic)**
+The project is already set up with a virtual environment! No additional setup needed.
 
-4. **Utility Modules**:
-   - `system_monitor.py`: Monitors system resources
+**What's Already Done:**
+- ✅ Virtual environment created (`venv/`)
+- ✅ All dependencies installed in isolated environment
+- ✅ PyQt5, Scapy, Pandas, and other packages ready
+- ✅ No conflicts with system Python
 
-## Performance Considerations
+### **3. Launch Options**
 
-- **Packet Capture**: Uses pcapy-ng for high-performance packet capture
-- **Processing**: Multi-threaded design for parallel packet processing
-- **Storage**: Batch processing and asynchronous storage to prevent blocking
-- **Memory Management**: Efficient queue management to prevent memory overuse
-- **System Monitoring**: Real-time resource monitoring to prevent system overload
+#### **🚀 Desktop App (Recommended)**
+```bash
+# Double-click this file:
+desktop_app\run_desktop_app.bat
+```
 
-## License
+#### **🚀 Main Application**
+```bash
+# Double-click this file:
+activate_and_run.bat
+```
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+#### **🚀 PowerShell**
+```bash
+# Activate and run:
+.\venv\Scripts\Activate.ps1
+python run_in_venv.py
+```
 
-## Acknowledgments
+## 🎯 **Usage**
 
-- [Scapy](https://scapy.net/) for packet manipulation
-- [pcapy-ng](https://github.com/stamparm/pcapy-ng) for packet capture
-- [SQLAlchemy](https://www.sqlalchemy.org/) for database operations
-- [PyQt5](https://www.riverbankcomputing.com/software/pyqt/) for GUI
+### **Desktop Application**
+1. **Launch**: Double-click `desktop_app\run_desktop_app.bat`
+2. **Interface Selection**: Choose your network interface
+3. **Start Capture**: Click "Start Capture" button
+4. **Monitor**: Watch real-time packet analysis and statistics
+5. **Export**: Save data to CSV, JSON, or database
+
+### **Main Application**
+1. **Launch**: Use `activate_and_run.bat` or PowerShell
+2. **Configuration**: Edit `config/config.yaml` for custom settings
+3. **Capture**: Start packet capture with your preferred settings
+4. **Analysis**: View detailed packet analysis and flow statistics
+
+### **Command Line Scripts**
+```bash
+# Activate virtual environment first
+.\venv\Scripts\Activate.ps1
+
+# Run specific scripts
+python scripts/capture_traffic.py
+python scripts/flow_analyzer.py
+python scripts/ml_workflow.py
+```
+
+## ⚙️ **Configuration**
+
+Edit `config/config.yaml` for custom settings:
+
+```yaml
+version: 0.1.0
+interface: auto                    # Network interface selection
+output_dir: ./output              # Output directory
+pcap:
+  enabled: true                   # Enable PCAP file storage
+  rotate_size_mb: 100            # File rotation size
+  max_files: 10                  # Maximum files to keep
+database:
+  enabled: true                   # Enable database storage
+  type: postgresql                # Database type
+  host: localhost                 # Database host
+  port: 5432                      # Database port
+  name: pyguard                   # Database name
+capture:
+  bpf_filter: ""                  # Berkeley Packet Filter
+  snaplen: 65535                  # Capture length
+  promiscuous: true               # Promiscuous mode
+  buffer_size_mb: 100            # Buffer size
+system:
+  memory_limit_percent: 80        # Memory usage limit
+  cpu_limit_percent: 90          # CPU usage limit
+log_level: INFO                   # Logging level
+```
+
+## 🏗️ **Architecture**
+
+PyGuard uses a modular, scalable architecture:
+
+### **Core Components**
+- **📡 Packet Capture**: Scapy-based capture with interface detection
+- **⚙️ Processing Engine**: Multi-threaded packet analysis and metadata extraction
+- **💾 Storage Layer**: Multiple storage backends (CSV, JSON, PostgreSQL)
+- **🖥️ UI Framework**: PyQt5-based desktop application
+- **📊 Monitoring**: Real-time system resource and capture statistics
+
+### **Data Flow**
+```
+Network Interface → Packet Capture → Processing → Storage → Analysis → UI
+```
+
+### **Performance Features**
+- **🚀 Async Processing**: Non-blocking packet processing
+- **📊 Batch Operations**: Efficient database and file operations
+- **💾 Memory Management**: Smart buffer management and rotation
+- **🔄 Multi-threading**: Parallel packet processing and storage
+
+## 🧪 **Testing**
+
+Run the test suite to verify your setup:
+
+```bash
+# Activate virtual environment
+.\venv\Scripts\Activate.ps1
+
+# Run tests
+python -m pytest tests/
+```
+
+## 🔍 **Troubleshooting**
+
+### **Common Issues**
+
+#### **1. PyQt5 Import Error**
+```bash
+# Solution: Use the virtual environment
+.\venv\Scripts\Activate.ps1
+python desktop_app\run_desktop_app.py
+```
+
+#### **2. Packet Capture Issues**
+- Ensure Npcap is installed (Windows)
+- Check interface permissions
+- Verify network interface is active
+
+#### **3. Database Connection**
+- PostgreSQL service running
+- Correct credentials in `config.yaml`
+- Database created and accessible
+
+### **Getting Help**
+1. Check the logs in the application
+2. Verify virtual environment is active
+3. Review `config/config.yaml` settings
+4. Check system requirements
+
+## 📚 **Documentation**
+
+- **📋 VENV_SETUP.md**: Virtual environment setup guide
+- **📋 GLOBAL_CLEANUP_SUMMARY.md**: Package cleanup details
+- **📋 DESKTOP_APP_FIX_SUMMARY.md**: Desktop app troubleshooting
+- **📋 PROJECT_STRUCTURE.md**: Detailed project organization
+- **📋 USAGE.md**: Comprehensive usage guide
+
+## 🤝 **Contributing**
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Test thoroughly
+5. Submit a pull request
+
+## 📄 **License**
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## 🙏 **Acknowledgments**
+
+- [Scapy](https://scapy.net/) - Packet manipulation and analysis
+- [PyQt5](https://www.riverbankcomputing.com/software/pyqt/) - Desktop GUI framework
+- [Pandas](https://pandas.pydata.org/) - Data manipulation and analysis
+- [SQLAlchemy](https://www.sqlalchemy.org/) - Database operations
+- [psutil](https://psutil.readthedocs.io/) - System monitoring
+
+## 🎉 **Status**
+
+- ✅ **Virtual Environment**: Fully configured and isolated
+- ✅ **Dependencies**: All packages installed and working
+- ✅ **Desktop App**: PyQt5 integration complete
+- ✅ **Launch Options**: Multiple easy-launch methods
+- ✅ **Documentation**: Comprehensive guides and troubleshooting
+- ✅ **Testing**: Verified functionality across components
+
+---
+
+**🚀 PyGuard is ready to use! Choose your preferred launch method and start capturing network traffic!**

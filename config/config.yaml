@@ -1,0 +1,39 @@
+capture:
+  batch_size: 1000
+  bpf_filter: ''
+  buffer_size_mb: 100
+  processing_threads: 4
+  promiscuous: true
+  snaplen: 65535
+csv_export:
+  directory: ./csv_export
+  enabled: true
+  max_files: 10
+  rotate_interval_minutes: 60
+database:
+  batch_size: 1000
+  commit_interval: 5
+  enabled: true
+  host: localhost
+  name: pyguard_db
+  password: 6969Ma@18082004
+  port: 5432
+  type: postgresql
+  user: postgres
+display:
+  max_packets: 1000
+  update_interval_ms: 100
+interface: null
+log_file: pyguard.log
+log_level: INFO
+output_dir: ./output
+pcap:
+  enabled: true
+  max_files: 10
+  rotate_interval_minutes: 60
+  rotate_size_mb: 100
+system:
+  check_interval_seconds: 10
+  cpu_limit_percent: 90
+  memory_limit_percent: 80
+version: 0.1.0

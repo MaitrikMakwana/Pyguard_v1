@@ -21,3 +21,31 @@ Thumbs.db
 
 # Other
 .env
+.venv
+venv/
+.pytest_cache/
+.idea/
+
+# Model artifacts
+Model/
+model/
+*.pt
+*.pth
+*.pkl
+
+# Output and data folders
+output/
+outputs/
+data/
+tmp/
+*.csv
+temp_*.csv
+
+# CICFlowMeter outputs
+cicflowmeter/**/output/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# System-specific
+desktop.ini
