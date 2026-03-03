@@ -88,7 +88,10 @@ def process_pcap_to_attacks(pcap_file_path):
         
         # Step 3: Run prediction
         print("Step 3: Running attack detection...")
-        results_df = predict_attacks_from_csv(aligned_csv_path)
+        # confidence_threshold: flows labelled as attack below this probability are
+        # reclassified as BENIGN to suppress false positives on heavy-but-legitimate
+        # traffic (e.g. video conferencing, large file transfers).
+        results_df = predict_attacks_from_csv(aligned_csv_path, confidence_threshold=0.75)
         
         # Step 4: Merge metadata back into results
         if not metadata_df.empty and len(metadata_df) == len(results_df):

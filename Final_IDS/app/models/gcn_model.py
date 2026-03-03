@@ -174,13 +174,17 @@ def create_graph(X_scaled, k=10):
     return data
 
 
-def predict_attacks(csv_file_path, output_file=None):
+def predict_attacks(csv_file_path, output_file=None, confidence_threshold=0.75):
     """
     Predict attack types from a CSV file
 
     Args:
         csv_file_path (str): Path to the CSV file containing network traffic data
         output_file (str, optional): Path to save predictions
+        confidence_threshold (float): Minimum confidence required to label a flow as
+            an attack.  Flows predicted as non-BENIGN but with confidence below this
+            threshold are reclassified as BENIGN to reduce false positives.
+            Range 0.0–1.0, default 0.75.
 
     Returns:
         DataFrame with original data and predictions
@@ -206,19 +210,14 @@ def predict_attacks(csv_file_path, output_file=None):
     predicted_labels = label_encoder.inverse_transform(predictions)
     confidence_scores = np.max(probabilities, axis=1)
 
-    # Force all predictions to BENIGN
-    benign_idx = None
-    for i, class_name in enumerate(metadata['class_names']):
-        if class_name == 'BENIGN':
-            benign_idx = i
-            break
-    
-    if benign_idx is not None:
-        # Replace all predictions with BENIGN
-        predicted_labels = np.array(['BENIGN'] * len(predictions))
-        # Set confidence to the BENIGN probability for each sample
-        confidence_scores = probabilities[:, benign_idx]
-        print("All predictions forced to BENIGN for testing purposes.")
+    # ── Confidence threshold filter ─────────────────────────────────────────
+    # Flows predicted as an attack but with low confidence are very likely
+    # legitimate heavy traffic (e.g. video calls, large downloads) that shares
+    # some timing patterns with DoS.  Reclassify them as BENIGN.
+    for i, (label, conf) in enumerate(zip(predicted_labels, confidence_scores)):
+        if label != 'BENIGN' and conf < confidence_threshold:
+            predicted_labels[i] = 'BENIGN'
+    # ────────────────────────────────────────────────────────────────────────
 
     results_df = df_original.copy()
     results_df['Predicted_Label'] = predicted_labels

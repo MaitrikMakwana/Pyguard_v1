@@ -93,7 +93,8 @@ from scapy.layers.http import HTTP, HTTPRequest, HTTPResponse
 # TLS import removed as it's not available in this version of scapy
 import binascii
 
-# IDS integration imports
+# IDS integration imports - try multiple import paths so the code works
+# when run as a package, as a top-level script, or bundled by PyInstaller.
 try:
     import requests
 except ImportError:
@@ -102,12 +103,44 @@ except ImportError:
         "requests library not available - remote IDS service disabled (local Final_IDS pipeline will be used if available)"
     )
 
-try:
-    from .ids_service_manager import IDSServiceManager, IDSServiceError
-    from .ids_analysis_widget import IDSAnalysisWidget
-except ImportError:
-    from ids_service_manager import IDSServiceManager, IDSServiceError  # type: ignore
-    from ids_analysis_widget import IDSAnalysisWidget  # type: ignore
+# Import IDS helper modules robustly across execution contexts
+import importlib
+IDSServiceManager = None
+IDSServiceError = None
+IDSAnalysisWidget = None
+
+def _try_import(module_names):
+    for name in module_names:
+        try:
+            mod = importlib.import_module(name)
+            return mod
+        except Exception:
+            continue
+    return None
+
+# Candidate module paths to try (package-relative, top-level, package-qualified)
+module_candidates_mgr = [
+    "desktop_app.ids_service_manager",
+    "ids_service_manager",
+]
+module_candidates_widget = [
+    "desktop_app.ids_analysis_widget",
+    "ids_analysis_widget",
+]
+
+mod_mgr = _try_import(module_candidates_mgr)
+mod_widget = _try_import(module_candidates_widget)
+
+if mod_mgr:
+    IDSServiceManager = getattr(mod_mgr, "IDSServiceManager", None)
+    IDSServiceError = getattr(mod_mgr, "IDSServiceError", Exception)
+else:
+    logger.debug("IDSServiceManager module not found; IDS integration disabled.")
+
+if mod_widget:
+    IDSAnalysisWidget = getattr(mod_widget, "IDSAnalysisWidget", None)
+else:
+    logger.debug("IDSAnalysisWidget module not found; IDS UI tab will be disabled.")
 
 
 class IDSAnalysisWorker(QThread):
