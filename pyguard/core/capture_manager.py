@@ -72,6 +72,20 @@ class CaptureManager:
 		self.cic_cli = self.cic_bin / "cfm.bat" if os.name == "nt" else self.cic_bin / "cfm"
 		self.cic_output_dir = self.cic_bin / "output"
 		
+		# Runtime state
+		self.running = False
+		self.num_processing_threads = config.capture.get("processing_threads", 2)
+		self.processing_threads = []
+		self.stats_thread = None
+		self.stats = {
+			"packets_processed": 0,
+			"packets_stored_db": 0,
+			"packets_stored_csv": 0,
+			"processing_errors": 0,
+			"start_time": None,
+			"last_update_time": None,
+		}
+
 		# Live prediction summary state
 		self._pred_summary_lock = threading.Lock()
 		self._latest_pred_summary = {
@@ -83,6 +97,11 @@ class CaptureManager:
 			"last_updated": None,
 		}
 		
+	@property
+	def packet_capture(self):
+		"""Return the primary PacketCapture instance (first interface)."""
+		return next(iter(self.packet_captures.values()))
+
 	def _create_interface_config(self, base_config, interface):
 		"""Create a config copy with a specific interface"""
 		# This is a simplified approach - in a real implementation,
@@ -180,15 +199,17 @@ class CaptureManager:
 			if self.csv_storage:
 				self.csv_storage.initialize()
 			
-			# Start packet capture
-			if not self.packet_capture.start():
-				logger.error("Failed to start packet capture")
-				return False
+			# Start all packet capture instances
+			for iface, pc in self.packet_captures.items():
+				if not pc.start():
+					logger.error(f"Failed to start packet capture on interface: {iface}")
+					return False
 			
 			# Start processing threads
 			self.running = True
 			self.stats["start_time"] = time.time()
 			self.stats["last_update_time"] = time.time()
+			self.processing_threads = []
 			
 			for i in range(self.num_processing_threads):
 				thread = threading.Thread(
@@ -225,8 +246,9 @@ class CaptureManager:
 		logger.info("Stopping capture manager")
 		self.running = False
 		
-		# Stop packet capture
-		self.packet_capture.stop()
+		# Stop all packet capture instances
+		for pc in self.packet_captures.values():
+			pc.stop()
 		
 		# Wait for processing threads to finish
 		for thread in self.processing_threads:
@@ -256,7 +278,7 @@ class CaptureManager:
 		
 		while self.running or not self.packet_capture.packet_queue.empty():
 			try:
-				# Get packet from queue with timeout
+				# Get packet from queue with timeout (use primary capture instance)
 				packet_data = self.packet_capture.get_packet(timeout=0.1)
 				if not packet_data:
 					# Check if it's time to commit the current batch
@@ -343,8 +365,14 @@ class CaptureManager:
 		interval = current_time - self.stats["last_update_time"]
 		self.stats["last_update_time"] = current_time
 		
-		# Get capture statistics
-		capture_stats = self.packet_capture.get_stats()
+		# Aggregate capture statistics across all interfaces
+		capture_stats = {}
+		for pc in self.packet_captures.values():
+			for k, v in pc.get_stats().items():
+				if isinstance(v, (int, float)):
+					capture_stats[k] = capture_stats.get(k, 0) + v
+				else:
+					capture_stats.setdefault(k, v)
 		
 		# Calculate rates
 		packets_per_second = self.stats["packets_processed"] / elapsed if elapsed > 0 else 0
@@ -366,9 +394,13 @@ class CaptureManager:
 		"""Get current statistics"""
 		stats = self.stats.copy()
 		
-		# Add capture statistics
-		capture_stats = self.packet_capture.get_stats()
-		stats.update(capture_stats)
+		# Aggregate capture statistics across all interfaces
+		for pc in self.packet_captures.values():
+			for k, v in pc.get_stats().items():
+				if isinstance(v, (int, float)):
+					stats[k] = stats.get(k, 0) + v
+				else:
+					stats.setdefault(k, v)
 		
 		# Calculate elapsed time and rates
 		current_time = time.time()

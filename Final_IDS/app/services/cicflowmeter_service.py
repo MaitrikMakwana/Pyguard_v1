@@ -43,11 +43,17 @@ def run_cicflowmeter(pcap_file_path, output_folder):
     try:
         return _run_python_cicflowmeter(pcap_file_path, output_folder)
     except Exception as py_exc:
+        logger.warning("Python cicflowmeter fallback failed: %s; trying PyGuard custom extractor...", py_exc)
+
+    try:
+        return _run_pyguard_extractor(pcap_file_path, output_folder)
+    except Exception as custom_exc:
         message = (
             f"CICFlowMeter failed using Java tool: {java_error}\n"
-            f"Python fallback failed: {py_exc}"
+            f"Python fallback failed: {py_exc}\n"
+            f"PyGuard custom extractor failed: {custom_exc}"
         )
-        raise Exception(message) from py_exc
+        raise Exception(message) from custom_exc
 
 
 def _run_java_cicflowmeter(pcap_file_path, output_folder):
@@ -122,9 +128,16 @@ def _run_python_cicflowmeter(pcap_file_path, output_folder):
     reader = RawPcapReader(os.path.abspath(pcap_file_path))
     packets = 0
 
-    for pkt_data, _ in reader:
+    for pkt_data, meta in reader:
         try:
-            session.on_packet_received(Ether(pkt_data))
+            pkt = Ether(pkt_data)
+            # ── Critical fix ──────────────────────────────────────────────────
+            # RawPcapReader meta = (sec, usec, wirelen).  Without setting
+            # pkt.time, FlowSession cannot compute IAT / flow duration, so all
+            # timing features come out as 0 and the model cannot detect attacks.
+            pkt.time = meta.sec + meta.usec / 1_000_000
+            # ─────────────────────────────────────────────────────────────────
+            session.on_packet_received(pkt)
             packets += 1
         except Exception as exc:
             logger.debug("Skipping packet during fallback conversion: %s", exc)
@@ -144,3 +157,22 @@ def _run_python_cicflowmeter(pcap_file_path, output_folder):
     print(f"Python cicflowmeter generated CSV: {output_csv} (packets processed: {packets})")
     return output_csv
 
+
+def _run_pyguard_extractor(pcap_file_path, output_folder):
+    """
+    Third fallback: PyGuard custom flow extractor.
+    Produces a model-ready CSV (all 78 features, correct order) directly from
+    the PCAP using real packet timestamps — no Java or cicflowmeter required.
+    The output CSV skips the feature_alignment_service step entirely.
+    """
+    import sys
+    pyguard_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+    scripts_dir  = os.path.join(pyguard_root, "scripts")
+    if scripts_dir not in sys.path:
+        sys.path.insert(0, scripts_dir)
+
+    from pyguard_flow_extractor import extract_flows_from_pcap
+
+    print(f"Using PyGuard custom flow extractor on: {pcap_file_path}")
+    csv_path = extract_flows_from_pcap(pcap_file_path, output_folder)
+    return csv_path

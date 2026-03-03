@@ -40,7 +40,7 @@ data/
 tmp/
 *.csv
 temp_*.csv
-
+.yaml
 # CICFlowMeter outputs
 cicflowmeter/**/output/
 
@@ -49,3 +49,10 @@ cicflowmeter/**/output/
 
 # System-specific
 desktop.ini
+
+# Build and Test logs
+build_log.txt
+test_results.txt
+*.pcap
+Final_IDS/Testing\ Files/*.pcap
+**/*.pcap

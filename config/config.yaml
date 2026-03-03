@@ -1,6 +1,6 @@
 capture:
   batch_size: 1000
-  bpf_filter: ''
+  bpf_filter: ""
   buffer_size_mb: 100
   processing_threads: 4
   promiscuous: true
